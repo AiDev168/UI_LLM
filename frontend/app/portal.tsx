@@ -66,8 +66,7 @@ export default function Portal() {
   };
 
   useEffect(() => { load(); }, []);
-
-  const refreshUsage = async () => { try { setUsage(await api("/usage")); } catch { /* dashboard remains available */ } };
+  const refreshUsage = async () => { try { setUsage(await api("/usage")); } catch {} };
   useEffect(() => { if (user && active === "usage") refreshUsage(); }, [user, active]);
 
   const submitAuth = async (e: FormEvent<HTMLFormElement>) => {
@@ -75,7 +74,6 @@ export default function Portal() {
     const body = authMode === "login" ? { email: fd.get("email"), password: fd.get("password") } : { name: fd.get("name"), email: fd.get("email"), password: fd.get("password") };
     try { await api(`/auth/${authMode}`, { method: "POST", body: JSON.stringify(body) }); await load(); } catch (err: any) { setFormError(err.message); }
   };
-
   const logout = async () => { await api("/auth/logout", { method: "POST" }); setUser(null); };
 
   const openConversation = async (id: string) => {
@@ -85,15 +83,12 @@ export default function Portal() {
       setSelectedModel(result.data.model || selectedModel); setActive("chat");
     } catch (err: any) { setFormError(err.message); }
   };
-
   const newConversation = () => { setConversationId(null); setMessages([]); setInput(""); setActive("chat"); setFormError(""); };
-
   const ensureConversation = async () => {
     if (conversationId) return conversationId;
     const result = await api("/conversations", { method: "POST", body: JSON.stringify({ model: selectedModel }) });
     const id = result.data.id; setConversationId(id); setConversations((items) => [result.data, ...items]); return id;
   };
-
   const persistMessage = async (id: string, role: "user" | "assistant", content: string) => {
     await api(`/conversations/${id}/messages`, { method: "POST", body: JSON.stringify({ role, content }) });
   };
@@ -101,19 +96,25 @@ export default function Portal() {
   const sendChat = async () => {
     const text = input.trim(); if (!text || sending) return;
     setSending(true); setInput(""); setFormError("");
-    const next = [...messages, { role: "user" as const, content: text }]; setMessages(next); setMessages((m) => [...m, { role: "assistant", content: "" }]);
+    const next = [...messages, { role: "user" as const, content: text }];
+    setMessages([...next, { role: "assistant", content: "" }]);
     try {
-      const id = await ensureConversation(); await persistMessage(id, "user", text);
+      const id = await ensureConversation();
+      await persistMessage(id, "user", text);
       const res = await fetch("/api/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: selectedModel, messages: next, stream: true, max_tokens: 1200, enable_thinking: false }) });
       if (!res.ok || !res.body) throw new Error(await res.text());
       const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let assistantText = "";
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
-        buffer += decoder.decode(value, { stream: true }); const events = buffer.split("\n\n"); buffer = events.pop() || "";
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n"); buffer = events.pop() || "";
         for (const event of events) {
           const line = event.split("\n").find((l) => l.startsWith("data:")); if (!line) continue;
           const payload = line.slice(5).trim(); if (!payload || payload === "[DONE]") continue;
-          try { const obj = JSON.parse(payload); const delta = obj.choices?.[0]?.delta?.content || ""; if (delta) { assistantText += delta; setMessages((m) => { const copy = [...m]; copy[copy.length - 1] = { role: "assistant", content: assistantText }; return copy; }); } } catch { /* keep streaming */ }
+          try {
+            const obj = JSON.parse(payload); const delta = obj.choices?.[0]?.delta?.content || "";
+            if (delta) { assistantText += delta; setMessages((m) => { const copy = [...m]; copy[copy.length - 1] = { role: "assistant", content: assistantText }; return copy; }); }
+          } catch {}
         }
       }
       if (assistantText) await persistMessage(id, "assistant", assistantText);
@@ -129,7 +130,6 @@ export default function Portal() {
   const rotateKey = async (id: string) => { if (!confirm("کلید فعلی با یک کلید جدید جایگزین شود؟")) return; const data = await api(`/api-keys/${id}/rotate`, { method: "POST" }); setNewKey(data); await load(); };
 
   const sidebar = useMemo(() => [["dashboard", "داشبورد", "home"], ["chat", "چت", "chat"], ["keys", "کلیدهای API", "key"], ["usage", "مصرف و Usage", "chart"], ["account", "حساب کاربری", "user"]], []);
-
   if (loading) return <div className="boot"><div className="brand-mark">H</div><div>در حال راه‌اندازی پنل…</div></div>;
   if (!user) return <Auth mode={authMode} setMode={setAuthMode} submit={submitAuth} error={formError} />;
 
@@ -154,7 +154,7 @@ export default function Portal() {
 }
 
 function Auth({ mode, setMode, submit, error }: any) { return <main className="auth-shell"><section className="auth-card"><div className="brand-lockup"><div className="brand-mark large">H</div><div><b>Hinaa</b><span>هوش مصنوعی حرفه‌ای</span></div></div><h1>{mode === "login" ? "خوش آمدید" : "ساخت حساب کاربری"}</h1><p className="muted">دسترسی به چت و سرویس‌های هوش مصنوعی Hinaa</p><form onSubmit={submit} className="form-stack">{mode === "register" && <label>نام<input name="name" required placeholder="نام شما" /></label>}<label>ایمیل<input name="email" type="email" required placeholder="you@example.com" /></label><label>رمز عبور<input name="password" type="password" minLength={8} required placeholder="حداقل ۸ کاراکتر" /></label>{error && <div className="error-box">{error}</div>}<button className="primary full" type="submit">{mode === "login" ? "ورود" : "ثبت‌نام"}</button></form><button className="link-btn" onClick={() => setMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "حساب ندارید؟ ثبت‌نام کنید" : "حساب دارید؟ وارد شوید"}</button></section></main>; }
-function Dashboard({ user, data, keys, onChat, onKeys }: any) { return <div className="content"><div className="hero"><div><div className="eyebrow">HINAA AI</div><h1>سلام {user.name} 👋</h1><p>همه‌چیز برای شروع یک تجربه حرفه‌ای با هوش مصنوعی آماده است.</p></div><button className="primary" onClick={onChat}><Icon name="chat"/>شروع گفتگو</button></div><div className="stat-grid"><Stat title="مدل فعال" value={data?.models?.[0] || "Qwen3-32B"}/><Stat title="کلیدهای فعال" value={data?.keys ?? keys.length}/><Stat title="هزینه ثبت‌شده" value={`$${Number(data?.spend || 0).toFixed(4)}`}/></div><div className="section-head"><h3>دسترسی سریع</h3></div><div className="quick-grid"><button onClick={onChat}><Icon name="chat"/><b>چت با هوش مصنوعی</b><span>گفتگوی سریع و مستقیم</span></button><button onClick={onKeys}><Icon name="key"/><b>مدیریت API Key</b><span>ساخت و مدیریت کلیدهای سرویس</span></button></div></div>; }
+function Dashboard({ user, data, keys, onChat, onKeys }: any) { return <div className="content"><div className="hero"><div><div className="eyebrow">HINAA AI</div><h1>سلام {user.name} 👋</h1><p>همه‌چیز برای شروع یک تجربه حرفه‌ای با هوش مصنوعی آماده است.</p></div><button className="primary" onClick={onChat}><Icon name="chat"/>شروع گفتگو</button></div><div className="stat-grid"><Stat title="مدل فعال" value={data?.models?.[0] || "Qwen3-32B"}/><Stat title="کلیدهای فعال" value={data?.keys ?? keys.length}/><Stat title="هزینه ثبت‌شده" value={`$${Number(data?.spend || 0).toFixed(4)}`}/></div><div className="section-head"><h3>دسترسی سریع</h3></div><div className="quick-grid"><button onClick={onChat}><Icon name="chat"/><b>چت با هوش مصنوعی</b><span>گفتگوی سریع و مستقیم</span></button><button onClick={onKeys}><Icon name="key"/><b>مدیریت API Key</b><span>ساخت و مدیریت کلید سرویس</span></button></div></div>; }
 function Stat({ title, value }: { title: string; value: string | number }) { return <div className="stat"><small>{title}</small><strong>{value}</strong><span>وضعیت فعلی</span></div>; }
 function Chat({ selectedModel, setSelectedModel, models, messages, input, setInput, sendChat, sending, onNew }: any) { const end = useRef<HTMLDivElement>(null); useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]); return <div className="chat-view"><div className="chat-head"><div><h3>{messages.length ? "گفتگو" : "گفتگوی جدید"}</h3><span>پاسخ‌ها توسط مدل انتخاب‌شده تولید می‌شوند.</span></div><div className="chat-tools"><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id}>{m.id}</option>)}</select><button className="secondary" onClick={onNew}>گفتگوی جدید</button></div></div><div className="messages">{messages.length === 0 ? <div className="empty-chat"><div className="brand-mark large">H</div><h2>چطور می‌توانم کمک کنم؟</h2><p>سؤال خود را به فارسی بنویسید.</p><div className="suggestions"><button onClick={() => setInput("یک متن حرفه‌ای برای معرفی محصول بنویس")}>معرفی محصول</button><button onClick={() => setInput("این کد را بررسی و بهینه کن")}>بررسی کد</button><button onClick={() => setInput("یک برنامه کاری هفتگی پیشنهاد بده")}>برنامه‌ریزی</button></div></div> : messages.map((m: Msg, i: number) => <div key={i} className={`message ${m.role}`}><div className="bubble">{m.content || (sending && i === messages.length - 1 ? "در حال فکر کردن…" : "")}</div></div>)}<div ref={end}/></div><div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } }} placeholder="پیام خود را بنویسید…"/><button className="send-btn" onClick={sendChat} disabled={sending || !input.trim()}><Icon name="send"/></button><div className="composer-hint">Enter برای ارسال · Shift+Enter برای خط جدید</div></div></div>; }
 function Keys({ keys, models, selectedModel, setSelectedModel, deleteKey, rotateKey, openModal, newKey, setNewKey }: any) { return <div className="content"><div className="page-intro"><div><div className="eyebrow">API CENTER</div><h1>کلیدهای API</h1><p>کلیدهای دسترسی خود را مدیریت کنید و هر کلید را به مدل‌های مجاز محدود کنید.</p></div><button className="primary" onClick={openModal}><Icon name="plus"/>ساخت کلید جدید</button></div><div className="toolbar"><label>مدل پیش‌فرض برای کلید جدید<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id}>{m.id}</option>)}</select></label></div>{newKey && <div className="reveal"><div><b>کلید جدید ایجاد شد</b><p>این مقدار را همین حالا کپی و در محل امن نگهداری کنید.</p><code>{newKey.key}</code></div><button onClick={() => navigator.clipboard?.writeText(newKey.key)}><Icon name="copy"/>کپی</button><button onClick={() => setNewKey(null)}>×</button></div>}<div className="key-grid">{keys.map((k: Key) => <div className="key-card" key={k.id}><div className="key-top"><div className="key-icon"><Icon name="key"/></div><div><b>{k.alias}</b><small>{k.masked}</small></div><span className={`pill ${k.status}`}>{k.status === "active" ? "فعال" : "لغو شده"}</span></div><div className="key-meta"><div><small>مدل</small><strong>{k.models.join("، ")}</strong></div><div><small>RPM</small><strong>{k.rpm_limit ?? "—"}</strong></div><div><small>مصرف</small><strong>${Number(k.spend || 0).toFixed(4)}</strong></div></div><div className="key-actions"><button onClick={() => rotateKey(k.id)}><Icon name="refresh"/>چرخش</button><button className="danger" onClick={() => deleteKey(k.id)}><Icon name="trash"/>لغو کلید</button></div></div>)}</div>{keys.length === 0 && <div className="empty-card"><h3>هنوز کلیدی ندارید</h3><p>اولین کلید API خود را بسازید.</p><button className="primary" onClick={openModal}>ساخت اولین کلید</button></div>}</div>; }
