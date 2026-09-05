@@ -82,6 +82,30 @@ pg_restore -l "$latest" | head -40
 
 If `pg_restore` is not installed on the host, do not install packages merely for this check; use an approved PostgreSQL client environment instead.
 
+### Backup verification completed 2026-09-05
+
+A real logical PostgreSQL custom-format backup was successfully created from the live `hinaa-portal-postgres` container:
+
+```text
+~/llm-stack/hinaa-portal-backups/hinaa-20260905T121617Z.dump
+```
+
+Observed size:
+
+```text
+8.9K
+```
+
+The file was confirmed non-empty with:
+
+```text
+BACKUP_FILE_OK
+```
+
+The SHA-256 command was executed on the server; the digest is intentionally not recorded in Git or chat because the operational rule is to keep backup metadata minimal and avoid unnecessary secret-adjacent material in shared history.
+
+This backup is a logical `pg_dump -Fc` archive. It is stronger than the older filesystem-only rollback copy, but an isolated restore test is still not recorded. Do not describe restore as verified until such a test succeeds.
+
 ## Phase 2 — Preserve the live environment
 
 Never copy repository `.env` over the server `.env`.
@@ -210,7 +234,7 @@ The known rollback baseline is:
 ~/llm-stack/hinaa-portal.backup-v0.1.3
 ```
 
-This is a filesystem backup, not a verified PostgreSQL restore procedure.
+This is a filesystem backup. A real logical PostgreSQL backup now also exists at the path recorded in Phase 1, but restore has not yet been isolated/tested.
 
 Before any destructive rollback operation:
 
@@ -224,7 +248,7 @@ Before any destructive rollback operation:
 8. Restart only the Portal project.
 9. Run all Phase 5 and Phase 6 smoke tests.
 
-Because the existing filesystem rollback has not been restore-tested, a production database rollback must not be considered automatically safe until a real logical backup and isolated restore procedure have been verified.
+The logical dump must be used for a controlled DB restore test before claiming database rollback is production-verified.
 
 ## Emergency stop conditions
 
