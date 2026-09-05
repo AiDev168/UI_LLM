@@ -5,9 +5,13 @@
 
 ## Verified production facts
 
-The live VPS application at `/home/zoneroot/llm-stack/hinaa-portal` is not a Git worktree. The running backend image still starts with `uvicorn app.main:app` and the container contains only `app/main.py`.
+The live VPS application at `/home/zoneroot/llm-stack/hinaa-portal` is not a Git worktree. The running backend image starts with the canonical command:
 
-The live API nevertheless already contains conversation and usage functionality inside `main.py`:
+```text
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+The live backend container contains `app/main.py` as the application module. The live API already contains conversation and usage functionality in that module:
 
 - `GET /conversations`
 - `POST /conversations`
@@ -25,17 +29,31 @@ The live PostgreSQL schema contains:
 
 The live `messages` table includes `prompt_tokens`, `completion_tokens`, and `total_tokens`.
 
-## Reconciliation rule
+## Reconciliation decision
 
-The repository feature branch must extend the existing `Conversation` / `Message` implementation rather than introduce a parallel persistence model.
+The canonical Portal persistence model is the existing `Conversation` / `Message` implementation in `backend/app/main.py`, matching the live production schema.
 
-The previously introduced branch-side `backend/app/conversations.py` defined a conflicting `conversation_messages` table and a `sequence` field. That design did not match the live production schema and has therefore been removed.
+The previously introduced branch-side `backend/app/conversations.py` defined a conflicting `conversation_messages` table and a `sequence` field. That design did not match production and has been removed from the feature branch.
 
-`backend/app/portal.py` may remain only as a thin compatibility entrypoint that imports the existing `app.main:app`; it must not introduce a second application or duplicate routes/models.
+The previously added `backend/app/portal.py` compatibility wrapper has also been removed. The backend Docker image now uses the canonical `app.main:app` entrypoint, matching the current production runtime.
+
+## Frontend boundary
+
+The feature branch may replace/refactor the frontend implementation for `panel.hinaa.ir`, but its API calls must remain compatible with the existing backend contract unless a deliberate, tested backend change is made.
+
+Conversation persistence must continue to use:
+
+```text
+/conversations
+/conversations/{conversation_id}
+/conversations/{conversation_id}/messages
+```
+
+Token accounting fields must remain compatible with the existing `messages` schema.
 
 ## Deployment safety
 
-Do not deploy the branch until repository code has been reconciled with the verified production schema and API contract.
+Do not deploy a branch state that introduces a second persistence model or attempts to reinitialize the current database.
 
 Do not delete or reinitialize:
 
@@ -44,8 +62,28 @@ Do not delete or reinitialize:
 - `.env`
 - LiteLLM/vLLM/ClearML/Open WebUI/Cloudflare infrastructure
 
-## Backup baseline
+## Current backup
 
-A verified custom-format PostgreSQL dump now exists on the VPS. It is readable/listable and contains the current Portal tables, constraints, indexes, and data entries.
+A real PostgreSQL custom-format logical backup was created from the live Portal database:
+
+```text
+~/llm-stack/hinaa-portal-backups/hinaa-20260905T121617Z.dump
+```
+
+The archive was successfully enumerated and contains the current Portal tables, data entries, primary keys, indexes, and foreign keys.
 
 An isolated restore test has not yet been performed.
+
+## Deployment gate
+
+Before the next production deployment, the feature branch must pass repository CI and the VPS smoke-test procedure in `docs/PORTAL_DEPLOYMENT_RUNBOOK.md`.
+
+The next deployment is Portal-only. It must not rebuild, restart, or reconfigure unrelated Compose projects.
+
+## Truth hierarchy
+
+```text
+Running server behavior > deployment assumptions
+Running DB schema    > feature-branch schema assumptions
+Repository code      > documentation assumptions
+```
