@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.main import Base, User, db, get_current_user
+from app.main import Base, User, db, engine, get_current_user
 
 router = APIRouter()
 
@@ -22,7 +22,7 @@ class Conversation(Base):
     model: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    messages: Mapped[list["ConversationMessage"]] = relationship(back_populates="conversation", cascade="all, delete-orphan", order_by="ConversationMessage.created_at")
+    messages: Mapped[list["ConversationMessage"]] = relationship(back_populates="conversation", cascade="all, delete-orphan", order_by="ConversationMessage.sequence")
 
 
 class ConversationMessage(Base):
@@ -36,7 +36,7 @@ class ConversationMessage(Base):
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
 
-Base.metadata.create_all(db().bind)
+Base.metadata.create_all(engine)
 
 
 class ConversationCreateIn(BaseModel):
@@ -109,7 +109,6 @@ def delete_conversation(conversation_id: str, user: User = Depends(get_current_u
 
 @router.get("/usage")
 async def usage(user: User = Depends(get_current_user)) -> dict[str, Any]:
-    # LiteLLM remains the source of truth for spend; portal DB owns user/key mapping.
     from app.main import fernet, key_usage, PortalKey
     with db() as session:
         keys = session.scalars(select(PortalKey).where(PortalKey.user_id == user.id)).all()
