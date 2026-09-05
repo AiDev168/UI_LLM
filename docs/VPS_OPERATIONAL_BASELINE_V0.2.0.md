@@ -1,77 +1,50 @@
 # Hinaa Portal VPS Operational Baseline — v0.2.0
 
-**Status:** Operational baseline / do not reinterpret as a fresh infrastructure audit  
+**Status:** Operational baseline / verified production state  
 **Portal:** `panel.hinaa.ir`  
 **Server project path:** `/home/zoneroot/llm-stack/hinaa-portal`  
-**Baseline version:** `v0.2.0`
+**Baseline:** `v0.2.0`
 
-This document records facts established from the current VPS state and deployment history. It is intentionally conservative: **running-server truth and repository truth must be verified separately**.
+## Scope boundary
 
-## 1. Scope boundary
-
-The active engineering scope is the Hinaa customer Portal:
+Active engineering scope:
 
 - `hinaa-portal-frontend`
 - `hinaa-portal-backend`
 - `hinaa-portal-postgres`
-- application source under `/home/zoneroot/llm-stack/hinaa-portal`
+- Portal source under `/home/zoneroot/llm-stack/hinaa-portal`
 
-The following are existing operational dependencies and are **not Portal development tasks**:
+Protected operational dependencies:
 
-- `qwen3-32b` / vLLM / H200 model serving
-- `litellm` and `litellm-postgres`
+- `qwen3-32b` / vLLM / H200
+- `litellm` / `litellm-postgres`
 - `open-webui`
-- ClearML stack (`clearml-webserver`, `clearml-apiserver`, `clearml-fileserver`, `async_delete`, `clearml-mongo`, `clearml-redis`, `clearml-elastic`)
+- ClearML stack
 - `cloudflared`
 - existing production secrets
 
-Do not troubleshoot, upgrade, rebuild, or reconfigure these systems as part of normal Portal feature work unless a specific regression is directly caused by a Portal change.
+These are not Portal development tasks and must not be rebuilt, reconfigured, restarted, or upgraded as part of routine Portal work.
 
-## 2. Current Portal containers
-
-| Service | Container | Image | Exposure |
-|---|---|---|---|
-| frontend | `hinaa-portal-frontend` | `hinaa-portal-frontend` | host `3100 -> 3000` |
-| backend | `hinaa-portal-backend` | `hinaa-portal-backend` | container-only `8000` |
-| postgres | `hinaa-portal-postgres` | `postgres:17-alpine` | container-only `5432` |
-
-Compose project:
+## Verified containers and exposure
 
 ```text
-hinaa-portal
+hinaa-portal-frontend   host 3100 -> container 3000
+hinaa-portal-backend    container-only 8000
+hinaa-portal-postgres   container-only 5432
 ```
 
-Compose file:
+Compose project: `hinaa-portal`  
+Compose file: `/home/zoneroot/llm-stack/hinaa-portal/docker-compose.yml`
 
-```text
-/home/zoneroot/llm-stack/hinaa-portal/docker-compose.yml
-```
+## Verified Docker networks
 
-## 3. Network topology
+Portal network: `hinaa_portal`  
+Backend external network: `litellm_default`  
+Internal Portal-to-LiteLLM path: `http://litellm:4000`
 
-Portal network:
+Do not move this browser-side or replace it with the public hostname without an explicit architecture decision.
 
-```text
-hinaa_portal
-```
-
-Backend is additionally attached to the existing external network:
-
-```text
-litellm_default
-```
-
-The Portal backend therefore reaches LiteLLM through Docker networking:
-
-```text
-http://litellm:4000
-```
-
-Do not replace this with a browser-side direct call or unnecessarily route internal traffic through the public hostname.
-
-## 4. Public routing
-
-Existing Cloudflare routing is:
+## Verified public routes
 
 ```text
 app.hinaa.ir   -> ClearML
@@ -80,34 +53,16 @@ chat.hinaa.ir  -> Open WebUI
 panel.hinaa.ir -> Hinaa Portal frontend
 ```
 
-The Cloudflare Tunnel already exists. **Do not create another tunnel for the Portal.**
+The Cloudflare Tunnel already exists. Do not create another one for Portal.
 
-## 5. LLM request path
-
-The intended customer request path is:
-
-```text
-Browser
-  -> Hinaa Portal frontend
-  -> Hinaa Portal backend
-  -> LiteLLM
-  -> vLLM
-  -> Qwen3-32B
-  -> H200
-```
-
-The browser must not receive the LiteLLM master key and must not call vLLM directly.
-
-## 6. Database separation
-
-Portal data is stored in its own PostgreSQL instance:
+## Verified Portal database
 
 ```text
 container: hinaa-portal-postgres
 DB: hinaa
 ```
 
-Current application tables verified on the running server:
+Current tables:
 
 ```text
 public.users
@@ -116,58 +71,41 @@ public.conversations
 public.messages
 ```
 
-Portal PostgreSQL is intentionally separate from:
+The live `messages` schema includes:
 
 ```text
-LiteLLM PostgreSQL
-ClearML MongoDB
-ClearML Redis
-ClearML Elasticsearch
+prompt_tokens
+completion_tokens
+total_tokens
 ```
 
-**Never merge these databases as part of Portal work.**
+Portal PostgreSQL is deliberately separate from LiteLLM PostgreSQL and the ClearML data stores. Do not merge them.
 
-The live PostgreSQL data directory is bind-mounted from:
+Live data directory:
 
 ```text
 /home/zoneroot/llm-stack/hinaa-portal/postgres-data
 ```
 
-to:
+Do not delete, reinitialize, or replace it during a normal application deployment.
+
+## Important port pitfall
 
 ```text
-/var/lib/postgresql/data
+Host 127.0.0.1:8000 = vLLM / qwen3-32b
+Container hinaa-portal-backend:8000 = Hinaa backend
 ```
 
-Treat `postgres-data` as production data. Do not delete, reinitialize, or replace it during a normal application deployment.
-
-## 7. Important port pitfall
-
-On the VPS host:
-
-```text
-127.0.0.1:8000 -> vLLM / qwen3-32b
-```
-
-Inside the Portal backend container:
-
-```text
-hinaa-portal-backend:8000 -> Hinaa backend
-```
-
-Therefore a host-side `curl http://127.0.0.1:8000/...` is **not** a backend health check.
-
-Correct backend checks include:
+Correct backend health check:
 
 ```bash
-docker exec hinaa-portal-backend python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json').status)"
+docker exec hinaa-portal-backend \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json').status)"
 ```
 
-## 8. Secrets boundary
+## Secret boundary
 
-The live Portal directory contains a restricted `.env` file. The production deployment must preserve the existing `.env` and must not replace it with a ZIP or repository copy.
-
-Known secret variables include:
+The production `.env` is server-owned and must be preserved. Known secret variables include:
 
 ```text
 POSTGRES_PASSWORD
@@ -176,224 +114,97 @@ FERNET_KEY
 LITELLM_MASTER_KEY
 ```
 
-Never commit these values. Never paste them into chat. Never expose `LITELLM_MASTER_KEY` to the frontend/browser.
+Never commit or paste their values. Never expose `LITELLM_MASTER_KEY` to the browser.
 
-## 9. Deployment provenance: v0.2.0
+## v0.2.0 provenance
 
-The current `v0.2.0` deployment is artifact/ZIP based.
+`v0.2.0` was deployed from a ZIP/artifact. The server directory is not a Git worktree, so branch, commit SHA, tag, and artifact checksum are not recorded. Do not invent provenance.
 
-Known facts:
-
-- the live server directory is not a Git worktree
-- branch/commit/tag for v0.2.0 are not recorded
-- ZIP checksum/hash is not recorded
-- the original artifact was `hinaa-portal-v0.2.0.zip`
-
-Do **not invent** a Git SHA, branch, or tag for v0.2.0.
-
-Future releases should record at minimum:
-
-```text
-repository
-branch
-commit SHA
-artifact/image identifier
-build timestamp
-migration version
-backup timestamp/path
-rollback procedure
-```
-
-## 10. Known rollback baseline
-
-Before v0.2.0 deployment, a filesystem backup was created at:
+Known rollback source baseline:
 
 ```text
 /home/zoneroot/llm-stack/hinaa-portal.backup-v0.1.3
 ```
 
-It included application files and the Portal PostgreSQL data directory.
+## Current database backup
 
-This is a **filesystem backup**, not a verified `pg_dump` backup.
-
-## 11. Current logical backup state (2026-09-05)
-
-A real logical PostgreSQL custom-format dump has now been created from the live Portal database:
+A logical custom-format dump was created from the live Portal PostgreSQL database:
 
 ```text
 /home/zoneroot/llm-stack/hinaa-portal-backups/hinaa-20260905T121617Z.dump
 ```
 
-Observed facts:
+Verified facts:
 
 ```text
-size              = 8.9K
-permissions       = 600
-non-empty check   = PASS (`BACKUP_FILE_OK`)
+custom format     = yes
+db archive listing = PASS
+non-empty          = PASS
+isolated restore   = NOT TESTED
 ```
 
-The SHA-256 output was intentionally redacted before being shared in ChatGPT, so the checksum is **not recorded here**.
+The archive contains the current Portal tables, table data, primary keys, indexes, and foreign keys.
 
-At this point:
+## Current runtime reconciliation
+
+The current VPS source and running image are the `v0.2.0` state, not the GitHub feature branch.
+
+The live Backend already contains the canonical `Conversation` and `Message` models and routes in `backend/app/main.py`. Production schema is therefore the source of truth for persistence.
+
+The feature branch was corrected so it does not introduce the conflicting `conversation_messages` model. The temporary compatibility entrypoint was removed and the Backend Dockerfile now uses the same canonical command as production:
 
 ```text
-filesystem backup exists       = yes
-logical pg_dump exists          = yes
-logical dump non-empty          = yes
-archive listing verification   = not yet recorded
-isolated restore test           = not yet recorded
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Do not describe the backup as a tested restore until an isolated restore has actually been performed.
+The feature-branch frontend is an application refinement layer over the existing backend contract; it must not introduce a parallel database model.
 
-## 12. v0.2.0 deployment procedure already used
-
-The documented successful v0.2.0 procedure was:
-
-1. Create filesystem backup:
-
-```bash
-cd ~/llm-stack
-sudo cp -a hinaa-portal hinaa-portal.backup-v0.1.3
-```
-
-2. Extract the v0.2.0 ZIP/artifact separately.
-3. Overlay application files onto the existing Portal directory while preserving the live `.env` and `postgres-data`.
-4. Build:
-
-```bash
-cd ~/llm-stack/hinaa-portal
-docker compose build --pull
-```
-
-5. Start/update:
-
-```bash
-docker compose up -d
-```
-
-No manual Alembic migration was recorded for v0.2.0.
-
-## 13. Important current runtime finding
-
-The latest VPS inspection confirms that the **currently running Portal backend image/process is still using the old entrypoint**:
+## Verified healthy baseline
 
 ```text
-uvicorn app.main:app
+Portal containers          = UP
+Portal PostgreSQL          = healthy
+http://127.0.0.1:3100      = HTTP 200
+https://panel.hinaa.ir      = HTTP 200
+Backend /openapi.json       = HTTP 200 from inside backend container
 ```
 
-The source tree on the VPS also currently contains only:
+## Deployment safety rules
+
+Normal Portal deployment must:
+
+1. target only the `hinaa-portal` Compose project
+2. preserve `.env`
+3. preserve `postgres-data`
+4. take a logical `pg_dump` before DB-changing releases
+5. build only Portal
+6. start only Portal
+7. run Portal health and smoke checks
+
+Forbidden routine operations:
 
 ```text
-backend/app/main.py
+- docker compose down -v
+- docker system prune
+- docker volume prune
+- docker network prune
+- deleting/reinitializing postgres-data
+- changing Cloudflare routing
+- creating a second Tunnel
+- changing public ports without an architecture decision
+- modifying vLLM/Qwen/H200
+- modifying LiteLLM
+- modifying ClearML
+- modifying Open WebUI
+- overwriting .env
 ```
 
-and does **not** contain the newer repository-side files introduced on the feature branch such as:
-
-```text
-backend/app/portal.py
-backend/app/conversations.py
-frontend/app/portal.tsx
-frontend/app/portal.css
-```
-
-Therefore the repository feature branch must **not** be described as already deployed to the current server. The current server and the current GitHub feature branch are separate states and must be compared before the next deployment.
-
-This is a deliberate safety finding, not an error condition by itself.
-
-## 14. Required pre-deployment safety procedure for future DB changes
-
-Before any change that could alter PostgreSQL schema or data:
-
-1. Verify the target Compose project and containers.
-2. Create a logical `pg_dump` backup.
-3. Record the backup path and timestamp.
-4. Verify the dump file is non-empty and readable.
-5. Apply the smallest required schema/application change.
-6. Run health checks and application smoke tests.
-
-Example read-only identity check:
-
-```bash
-cd /home/zoneroot/llm-stack/hinaa-portal
-docker compose ps
-```
-
-Example logical backup:
-
-```bash
-mkdir -p ~/llm-stack/hinaa-portal-backups
-
-docker exec hinaa-portal-postgres sh -lc \
-  'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-  > ~/llm-stack/hinaa-portal-backups/hinaa-$(date -u +%Y%m%dT%H%M%SZ).dump
-```
-
-Verify the dump exists:
-
-```bash
-ls -lh ~/llm-stack/hinaa-portal-backups/
-```
-
-Do not delete the filesystem rollback baseline when creating logical backups.
-
-## 15. Safe Portal deployment checklist
-
-For a normal Portal-only application deployment:
-
-```text
-[ ] Confirm repository change is reviewed
-[ ] Confirm expected branch/commit locally
-[ ] Compare current VPS source/image with intended release
-[ ] Confirm live .env will be preserved
-[ ] Confirm postgres-data will be preserved
-[ ] If DB change: take and verify pg_dump
-[ ] Do not stop unrelated stacks
-[ ] Build only the Portal compose project
-[ ] Start only the Portal compose project
-[ ] Check frontend/backend/postgres status
-[ ] Check panel.hinaa.ir
-[ ] Check backend /openapi.json from inside the backend container
-[ ] Smoke-test authentication
-[ ] Smoke-test API-key flow
-[ ] Smoke-test Chat/streaming
-[ ] Check logs for startup/runtime errors
-```
-
-## 16. Forbidden routine operations
-
-Do not use these as routine Portal deployment commands:
-
-```bash
-docker compose down -v
-docker system prune
-docker volume prune
-docker network prune
-```
-
-Do not:
-
-- delete `postgres-data`
-- recreate the Portal database unnecessarily
-- change public ports without an explicit architecture decision
-- change Cloudflare routes
-- create a second Cloudflare Tunnel
-- modify vLLM configuration
-- modify LiteLLM infrastructure
-- modify ClearML
-- modify Open WebUI
-- modify Qwen model files
-- overwrite `.env`
-- expose production secrets
-
-## 17. Truth hierarchy
-
-When deciding whether a feature is complete:
+## Truth hierarchy
 
 ```text
 Running server behavior > deployment assumptions
+Running DB schema    > feature-branch schema assumptions
 Repository code      > documentation assumptions
-Database schema      > UI assumptions
 ```
 
-A feature described in documentation is not considered complete until the repository implementation and the running API/schema support it.
+A feature is not considered complete until the repository implementation, API contract, database schema, and relevant running behavior are consistent.
