@@ -1,4 +1,8 @@
-from app.main import app
-from app.conversations import router as conversations_router
+"""Stable Portal entrypoint for the existing Hinaa backend application.
 
-app.include_router(conversations_router)
+The production database already contains the canonical conversation/message
+schema and routes in app.main. This module intentionally composes the same
+application without introducing a second conversation model or router.
+"""
+
+from app.main import app
