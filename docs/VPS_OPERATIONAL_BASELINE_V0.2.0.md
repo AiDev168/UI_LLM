@@ -216,17 +216,37 @@ It included application files and the Portal PostgreSQL data directory.
 
 This is a **filesystem backup**, not a verified `pg_dump` backup.
 
-Current backup knowledge:
+## 11. Current logical backup state (2026-09-05)
+
+A real logical PostgreSQL custom-format dump has now been created from the live Portal database:
+
+```text
+/home/zoneroot/llm-stack/hinaa-portal-backups/hinaa-20260905T121617Z.dump
+```
+
+Observed facts:
+
+```text
+size              = 8.9K
+permissions       = 600
+non-empty check   = PASS (`BACKUP_FILE_OK`)
+```
+
+The SHA-256 output was intentionally redacted before being shared in ChatGPT, so the checksum is **not recorded here**.
+
+At this point:
 
 ```text
 filesystem backup exists       = yes
-logical pg_dump confirmed       = no
-restore test confirmed         = no
+logical pg_dump exists          = yes
+logical dump non-empty          = yes
+archive listing verification   = not yet recorded
+isolated restore test           = not yet recorded
 ```
 
-A restore procedure must therefore not be described as tested until it is actually exercised against an isolated PostgreSQL instance.
+Do not describe the backup as a tested restore until an isolated restore has actually been performed.
 
-## 11. v0.2.0 deployment procedure already used
+## 12. v0.2.0 deployment procedure already used
 
 The documented successful v0.2.0 procedure was:
 
@@ -254,7 +274,34 @@ docker compose up -d
 
 No manual Alembic migration was recorded for v0.2.0.
 
-## 12. Required pre-deployment safety procedure for future DB changes
+## 13. Important current runtime finding
+
+The latest VPS inspection confirms that the **currently running Portal backend image/process is still using the old entrypoint**:
+
+```text
+uvicorn app.main:app
+```
+
+The source tree on the VPS also currently contains only:
+
+```text
+backend/app/main.py
+```
+
+and does **not** contain the newer repository-side files introduced on the feature branch such as:
+
+```text
+backend/app/portal.py
+backend/app/conversations.py
+frontend/app/portal.tsx
+frontend/app/portal.css
+```
+
+Therefore the repository feature branch must **not** be described as already deployed to the current server. The current server and the current GitHub feature branch are separate states and must be compared before the next deployment.
+
+This is a deliberate safety finding, not an error condition by itself.
+
+## 14. Required pre-deployment safety procedure for future DB changes
 
 Before any change that could alter PostgreSQL schema or data:
 
@@ -272,7 +319,7 @@ cd /home/zoneroot/llm-stack/hinaa-portal
 docker compose ps
 ```
 
-Example logical backup (the command writes a new backup file and does not modify the live database):
+Example logical backup:
 
 ```bash
 mkdir -p ~/llm-stack/hinaa-portal-backups
@@ -290,16 +337,17 @@ ls -lh ~/llm-stack/hinaa-portal-backups/
 
 Do not delete the filesystem rollback baseline when creating logical backups.
 
-## 13. Safe Portal deployment checklist
+## 15. Safe Portal deployment checklist
 
 For a normal Portal-only application deployment:
 
 ```text
 [ ] Confirm repository change is reviewed
 [ ] Confirm expected branch/commit locally
+[ ] Compare current VPS source/image with intended release
 [ ] Confirm live .env will be preserved
 [ ] Confirm postgres-data will be preserved
-[ ] If DB change: take verified pg_dump
+[ ] If DB change: take and verify pg_dump
 [ ] Do not stop unrelated stacks
 [ ] Build only the Portal compose project
 [ ] Start only the Portal compose project
@@ -312,7 +360,7 @@ For a normal Portal-only application deployment:
 [ ] Check logs for startup/runtime errors
 ```
 
-## 14. Forbidden routine operations
+## 16. Forbidden routine operations
 
 Do not use these as routine Portal deployment commands:
 
@@ -338,7 +386,7 @@ Do not:
 - overwrite `.env`
 - expose production secrets
 
-## 15. Truth hierarchy
+## 17. Truth hierarchy
 
 When deciding whether a feature is complete:
 
