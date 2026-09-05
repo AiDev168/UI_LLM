@@ -2,9 +2,7 @@
 
 This runbook is for `panel.hinaa.ir` only. It is designed to prevent accidental impact to the existing LLM/ClearML/Open WebUI infrastructure.
 
-## Preconditions
-
-Deployment target:
+## Current target
 
 ```text
 /home/zoneroot/llm-stack/hinaa-portal
@@ -14,9 +12,8 @@ Compose project: hinaa-portal
 Protected dependencies:
 
 ```text
-qwen3-32b
-litellm
-litellm-postgres
+qwen3-32b / vLLM / H200
+litellm / litellm-postgres
 open-webui
 clearml-*
 cloudflared
@@ -29,11 +26,9 @@ Protected data/secrets:
 /home/zoneroot/llm-stack/hinaa-portal/postgres-data
 ```
 
-Do not replace either file/directory during an application overlay.
+Never overwrite or recreate these as part of a normal Portal application deployment.
 
 ## Phase 0 — Read-only preflight
-
-Run:
 
 ```bash
 cd /home/zoneroot/llm-stack/hinaa-portal
@@ -50,11 +45,11 @@ sudo ls -ld /home/zoneroot/llm-stack/hinaa-portal/postgres-data
 sudo ls -l /home/zoneroot/llm-stack/hinaa-portal/.env
 ```
 
-Stop here if any unrelated infrastructure unexpectedly changed state.
+Stop if the Portal state is not the expected one.
 
-## Phase 1 — Logical database backup before schema/data changes
+## Phase 1 — Logical backup before DB changes
 
-Only required when the release changes database schema/data or when operationally appropriate.
+A logical PostgreSQL backup is required for any release that changes schema or data.
 
 ```bash
 mkdir -p ~/llm-stack/hinaa-portal-backups
@@ -62,148 +57,121 @@ mkdir -p ~/llm-stack/hinaa-portal-backups
 docker exec hinaa-portal-postgres sh -lc \
   'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
   > ~/llm-stack/hinaa-portal-backups/hinaa-$(date -u +%Y%m%dT%H%M%SZ).dump
-```
 
-Verify:
-
-```bash
 latest=$(ls -1t ~/llm-stack/hinaa-portal-backups/*.dump | head -1)
+chmod 600 "$latest"
 ls -lh "$latest"
-file "$latest"
+test -s "$latest" && echo "BACKUP_FILE_OK"
 ```
 
-A dump file must exist and be non-empty before proceeding with a risky DB change.
-
-For higher assurance, inspect the archive without restoring it:
+A custom-format archive can be inspected without modifying the live database:
 
 ```bash
-pg_restore -l "$latest" | head -40
+docker cp "$latest" hinaa-portal-postgres:/tmp/portal-backup.inspect.dump
+
+docker exec hinaa-portal-postgres \
+  pg_restore -l /tmp/portal-backup.inspect.dump | head -60
+
+docker exec hinaa-portal-postgres \
+  rm -f /tmp/portal-backup.inspect.dump
 ```
 
-If `pg_restore` is not installed on the host, do not install packages merely for this check; use an approved PostgreSQL client environment instead.
+An isolated restore test is separate work and must not be performed against the live Portal database.
 
-### Backup verification completed 2026-09-05
+## Phase 2 — Fetch/review the intended release
 
-A real logical PostgreSQL custom-format backup was successfully created from the live `hinaa-portal-postgres` container:
+The current VPS directory is not a Git worktree. Never assume it is the same code as the GitHub branch.
 
-```text
-~/llm-stack/hinaa-portal-backups/hinaa-20260905T121617Z.dump
-```
+Before deployment, obtain the exact reviewed GitHub branch/commit/artifact and compare it with the current server source. Do not overlay production from an unreviewed working tree.
 
-Observed size:
-
-```text
-8.9K
-```
-
-The file was confirmed non-empty with:
-
-```text
-BACKUP_FILE_OK
-```
-
-The SHA-256 command was executed on the server; the digest is intentionally not recorded in Git or chat because the operational rule is to keep backup metadata minimal and avoid unnecessary secret-adjacent material in shared history.
-
-This backup is a logical `pg_dump -Fc` archive. It is stronger than the older filesystem-only rollback copy, but an isolated restore test is still not recorded. Do not describe restore as verified until such a test succeeds.
-
-## Phase 2 — Preserve the live environment
+## Phase 3 — Preserve the live environment
 
 Never copy repository `.env` over the server `.env`.
 
-Never delete or recreate `postgres-data`.
+Never delete or replace `postgres-data`.
 
-When deploying an artifact, extract it to a temporary directory first and overlay only application/config files intended for the release.
+When an artifact deployment is required, extract the artifact into a temporary directory first. Overlay only the application source/config intended by the reviewed release.
 
-Before overlaying, save a local emergency copy of the current application source if an artifact deployment requires it:
+For an emergency application-source checkpoint, when disk space permits:
 
 ```bash
 cd ~/llm-stack
 sudo cp -a hinaa-portal "hinaa-portal.predeploy-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-This command copies the application tree, including existing data, and should only be used when enough disk space exists. It must not replace the established rollback baseline.
+This does not replace the established `v0.1.3` rollback baseline.
 
-## Phase 3 — Build Portal only
-
-From the Portal directory:
+## Phase 4 — Build Portal only
 
 ```bash
 cd ~/llm-stack/hinaa-portal
 docker compose build --pull
 ```
 
-Do not run a global Docker prune. Do not build unrelated Compose projects.
+This command targets the `hinaa-portal` Compose project only.
 
-## Phase 4 — Start/update Portal only
+Never use a global Docker prune as part of Portal deployment.
+
+## Phase 5 — Start/update Portal only
 
 ```bash
 cd ~/llm-stack/hinaa-portal
 docker compose up -d
 ```
 
-This should operate on the `hinaa-portal` Compose project.
+Do not run `docker compose down` unless there is a specific, reviewed reason and the rollback consequences are understood.
 
-Do not run `docker compose down` against unrelated directories.
-
-## Phase 5 — Immediate health checks
+## Phase 6 — Immediate health checks
 
 ```bash
 cd ~/llm-stack/hinaa-portal
 docker compose ps
-```
 
-Expected Portal containers:
+curl -fsSI http://127.0.0.1:3100 | head -1
+curl -fsSI https://panel.hinaa.ir | head -1
 
-```text
-hinaa-portal-frontend   Up
-hinaa-portal-backend    Up
-hinaa-portal-postgres   Up / healthy
-```
-
-Frontend host check:
-
-```bash
-curl -I http://127.0.0.1:3100
-```
-
-Public check:
-
-```bash
-curl -I https://panel.hinaa.ir
-```
-
-Backend check must be made from inside the backend container because host port `8000` belongs to vLLM:
-
-```bash
 docker exec hinaa-portal-backend \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json').status)"
 ```
 
-## Phase 6 — Authentication and Portal smoke tests
+Remember: host `127.0.0.1:8000` is vLLM, not the Portal backend.
 
-Perform these through the actual Portal UI/API without printing secrets:
+Expected:
+
+```text
+frontend           UP
+backend            UP
+postgres           UP / healthy
+frontend local     HTTP 200
+panel.hinaa.ir     HTTP 200
+backend openapi    HTTP 200
+```
+
+## Phase 7 — Portal smoke tests
+
+Perform these through the real Portal UI/API without printing secrets:
 
 ```text
 [ ] login
-[ ] register (only when appropriate)
-[ ] /me/session remains valid after reload
-[ ] create API key
-[ ] verify key is masked after initial reveal
-[ ] verify model selector loads
-[ ] send chat message
-[ ] receive streamed model response
-[ ] refresh and verify conversation persistence
-[ ] open a previous conversation
+[ ] register when appropriate
+[ ] session survives reload
+[ ] model list loads
+[ ] API key creation works
+[ ] newly created key is shown once and then masked
+[ ] chat request reaches the model and streams a response
+[ ] user message persists
+[ ] assistant message persists
+[ ] refresh and reopen conversation
+[ ] create a new conversation
 [ ] delete a conversation
-[ ] verify Usage page loads
-[ ] verify Account page loads
+[ ] Usage page loads
+[ ] Account page loads
+[ ] password change flow, when enabled, works
 ```
 
-Do not copy API-key values into logs, shell history, tickets, or chat.
+Do not paste API-key values, passwords, or production secrets into logs or chat.
 
-## Phase 7 — Logs
-
-Inspect only Portal logs first:
+## Phase 8 — Portal logs only
 
 ```bash
 docker logs --tail 200 hinaa-portal-backend
@@ -211,60 +179,52 @@ docker logs --tail 200 hinaa-portal-frontend
 docker logs --tail 200 hinaa-portal-postgres
 ```
 
-Do not restart or modify LiteLLM/vLLM/ClearML/Open WebUI merely because a Portal log is being inspected.
+Do not alter unrelated stacks while investigating Portal logs.
 
-## Rollback decision point
+## Rollback gate
 
-Rollback is appropriate when the new Portal release causes a material regression such as:
+Rollback only for material regressions such as:
 
-- frontend unavailable
+- Portal frontend unavailable
 - backend cannot start
-- database migration failure
-- authentication failure introduced by the release
-- Portal Chat cannot reach LiteLLM while the existing LLM stack remains healthy
-- destructive or corrupt application behavior
+- DB migration failure
+- authentication broken by the release
+- Portal chat cannot reach LiteLLM while the external LLM stack remains healthy
+- destructive/corrupt application behavior
 
-Do not start rollback merely because a non-blocking cosmetic issue exists.
-
-## Rollback principle
-
-The known rollback baseline is:
+Known rollback filesystem baseline:
 
 ```text
 ~/llm-stack/hinaa-portal.backup-v0.1.3
 ```
 
-This is a filesystem backup. A real logical PostgreSQL backup now also exists at the path recorded in Phase 1, but restore has not yet been isolated/tested.
+A logical backup now exists as well, but a database restore has not yet been isolated/tested.
 
-Before any destructive rollback operation:
+For database rollback, use a verified logical-backup procedure; never guess by deleting/reinitializing `postgres-data`.
 
-1. Capture current Portal logs.
-2. Preserve the current application directory as an emergency copy when disk space permits.
-3. Stop only the Portal Compose project if stopping is required.
-4. Restore the application source from the approved rollback baseline.
-5. Preserve/reconcile the `.env` deliberately; do not blindly overwrite it.
-6. Do not delete live PostgreSQL data.
-7. For database rollback, use a verified PostgreSQL backup/restore procedure rather than guessing from filesystem copies.
-8. Restart only the Portal project.
-9. Run all Phase 5 and Phase 6 smoke tests.
+## Forbidden routine operations
 
-The logical dump must be used for a controlled DB restore test before claiming database rollback is production-verified.
+Never use these as routine Portal deployment steps:
 
-## Emergency stop conditions
-
-Stop the deployment immediately if a command would:
-
-```text
-- remove or reinitialize postgres-data
-- expose or replace .env secrets
-- change Cloudflare routes
-- modify public ports unexpectedly
-- alter vLLM configuration
-- alter LiteLLM infrastructure
-- alter ClearML
-- alter Open WebUI
-- modify Qwen model files
-- prune Docker globally
+```bash
+docker compose down -v
+docker system prune
+docker volume prune
+docker network prune
 ```
 
-When in doubt, do not execute the command. Inspect the exact Compose project, container, network, and path first.
+Never:
+
+- overwrite `.env`
+- delete/reinitialize `postgres-data`
+- recreate the Portal database unnecessarily
+- change public ports without an explicit architecture decision
+- change Cloudflare routes
+- create a second Cloudflare Tunnel
+- modify vLLM / Qwen / H200 serving
+- modify LiteLLM infrastructure
+- modify ClearML
+- modify Open WebUI
+- modify unrelated Docker projects
+
+When in doubt, inspect first and stop before executing a destructive command.
