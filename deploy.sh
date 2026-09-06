@@ -1,292 +1,308 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-cd "$(dirname "$0")"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$APP_DIR"
 
-BACKUP_DIR="${HOME}/llm-stack/hinaa-portal-backups"
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+MODE="${1:-}"
+TAG="${2:-}"
 
-MODE=""
-ROLLBACK_TAG=""
-
-DEPLOY_SUCCESS=0
+COMPOSE="docker compose"
+BACKUP_DIR="$HOME/llm-stack/hinaa-portal-backups"
+HEALTH_URL="http://127.0.0.1:3100"
+PUBLIC_URL="https://panel.hinaa.ir"
+ROLLBACK_ROOT="/tmp/hinaa-rollback"
 
 log() {
-  printf '\n[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"
+  printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
 }
 
-fail() {
-  printf '\nERROR: %s\n' "$*" >&2
+die() {
+  echo
+  echo "ERROR: $*" >&2
   exit 1
 }
 
-usage() {
-  cat <<'USAGE'
+require_clean_tree() {
+  git diff --quiet || die "Git working tree has unstaged changes."
+  git diff --cached --quiet || die "Git index has staged changes."
+}
+
+require_env() {
+  [[ -f .env ]] || die ".env is missing. Refusing to continue."
+  [[ "$(stat -c '%a' .env)" == "600" ]] || die ".env permissions must be 600."
+}
+
+compose_validate() {
+  log "Validating Docker Compose"
+  $COMPOSE config >/dev/null
+  log "Compose validation passed"
+}
+
+required_services() {
+  local services
+  services="$($COMPOSE config --services)"
+  for svc in postgres backend frontend; do
+    echo "$services" | grep -qx "$svc" || die "Required service missing: $svc"
+  done
+}
+
+wait_http() {
+  local url="$1"
+  local name="$2"
+  local max="${3:-60}"
+
+  for ((i=1; i<=max; i++)); do
+    if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+      log "$name OK"
+      return 0
+    fi
+    sleep 2
+  done
+
+  die "$name failed: $url"
+}
+
+backup_db() {
+  mkdir -p "$BACKUP_DIR"
+  chmod 700 "$BACKUP_DIR"
+
+  local file
+  file="$BACKUP_DIR/hinaa-$(date -u '+%Y%m%dT%H%M%SZ').dump"
+
+  log "Creating PostgreSQL backup"
+  $COMPOSE exec -T postgres pg_dump \
+    -U "${POSTGRES_USER:-portal}" \
+    -d "${POSTGRES_DB:-portal}" \
+    -Fc > "$file"
+
+  chmod 600 "$file"
+  log "Backup created: $file"
+}
+
+check_current() {
+  log "Checking local frontend"
+  wait_http "$HEALTH_URL" "Local frontend"
+
+  log "Checking backend health"
+  $COMPOSE exec -T backend curl -fsS \
+    http://127.0.0.1:8000/health >/dev/null
+  log "Backend health OK"
+
+  log "Checking Alembic"
+  local current
+  current="$($COMPOSE exec -T backend alembic current 2>/dev/null || true)"
+  [[ -n "$current" ]] || die "Unable to read Alembic current revision."
+  echo "$current"
+
+  log "Checking public panel"
+  curl -fsS --max-time 15 "$PUBLIC_URL" >/dev/null
+  log "Public panel check passed"
+
+  echo
+  echo "Preflight check passed."
+}
+
+rollback_preflight() {
+  local target_tag="$1"
+  local worktree="$ROLLBACK_ROOT/${target_tag//\//_}-$(date +%Y%m%d%H%M%S)"
+
+  rm -rf "$worktree"
+  mkdir -p "$ROLLBACK_ROOT"
+
+  log "Validating rollback tag: $target_tag"
+
+  git rev-parse --verify "refs/tags/$target_tag" >/dev/null 2>&1 \
+    || die "Tag not found: $target_tag"
+
+  git worktree add --detach "$worktree" "$target_tag"
+
+  cleanup_preflight() {
+    git worktree remove --force "$worktree" >/dev/null 2>&1 || true
+    rm -rf "$worktree"
+  }
+  trap cleanup_preflight RETURN
+
+  cp .env "$worktree/.env"
+  chmod 600 "$worktree/.env"
+
+  cd "$worktree"
+
+  log "Rollback source commit"
+  git rev-parse --short HEAD
+
+  log "Validating rollback compose"
+  $COMPOSE config >/dev/null
+  log "Rollback compose OK"
+
+  log "Checking required services"
+  required_services
+
+  log "Checking Alembic compatibility"
+  if [[ ! -f backend/alembic.ini ]]; then
+    die "Rollback tag has no Alembic configuration."
+  fi
+
+  if grep -q 'create_all' backend/app/main.py; then
+    die "Rollback tag contains Base.metadata.create_all(); refusing automatic rollback."
+  fi
+
+  log "Building rollback backend image"
+  $COMPOSE build backend
+
+  log "Building rollback frontend image"
+  $COMPOSE build frontend
+
+  log "Rollback preflight BUILD PASSED"
+  log "No production services were started or restarted."
+
+  cd "$APP_DIR"
+  git worktree remove --force "$worktree" >/dev/null 2>&1 || true
+  rm -rf "$worktree"
+  trap - RETURN
+}
+
+deploy() {
+  require_clean_tree
+  require_env
+  compose_validate
+  required_services
+
+  backup_db
+
+  log "Building backend"
+  $COMPOSE build backend
+
+  log "Building frontend"
+  $COMPOSE build frontend
+
+  log "Starting PostgreSQL"
+  $COMPOSE up -d postgres
+
+  log "Starting backend"
+  $COMPOSE up -d backend
+
+  log "Waiting for backend"
+  $COMPOSE exec -T backend curl -fsS \
+    http://127.0.0.1:8000/health >/dev/null
+
+  log "Checking Alembic"
+  $COMPOSE exec -T backend alembic current
+
+  log "Starting frontend"
+  $COMPOSE up -d frontend
+
+  check_current
+}
+
+rollback() {
+  local target_tag="$1"
+
+  require_clean_tree
+  require_env
+
+  [[ -n "$target_tag" ]] || die "Usage: $0 --rollback <tag>"
+
+  # CRITICAL:
+  # Build and validate the rollback target BEFORE touching Production.
+  rollback_preflight "$target_tag"
+
+  log "Rollback preflight successful."
+
+  # Only now create the production backup.
+  backup_db
+
+  log "Creating production rollback worktree"
+
+  local worktree="$ROLLBACK_ROOT/prod-${target_tag//\//_}-$(date +%Y%m%d%H%M%S)"
+  mkdir -p "$ROLLBACK_ROOT"
+
+  git worktree add --detach "$worktree" "$target_tag"
+
+  cleanup_prod() {
+    git worktree remove --force "$worktree" >/dev/null 2>&1 || true
+    rm -rf "$worktree"
+  }
+  trap cleanup_prod RETURN
+
+  cp .env "$worktree/.env"
+  chmod 600 "$worktree/.env"
+
+  cd "$worktree"
+
+  log "Building verified rollback backend"
+  $COMPOSE build backend
+
+  log "Building verified rollback frontend"
+  $COMPOSE build frontend
+
+  log "Stopping ONLY Portal backend/frontend"
+  $COMPOSE stop backend frontend || true
+
+  log "Starting PostgreSQL"
+  $COMPOSE up -d postgres
+
+  log "Starting rollback backend"
+  $COMPOSE up -d backend
+
+  log "Checking rollback backend"
+  $COMPOSE exec -T backend curl -fsS \
+    http://127.0.0.1:8000/health >/dev/null
+
+  log "Checking Alembic"
+  $COMPOSE exec -T backend alembic current
+
+  log "Starting rollback frontend"
+  $COMPOSE up -d frontend
+
+  log "Checking rollback frontend"
+  wait_http "$HEALTH_URL" "Local frontend"
+
+  log "Checking public panel"
+  curl -fsS --max-time 15 "$PUBLIC_URL" >/dev/null
+
+  echo
+  echo "========================================"
+  echo "ROLLBACK COMPLETED"
+  echo "Tag: $target_tag"
+  echo "Database was NOT downgraded."
+  echo "========================================"
+
+  cd "$APP_DIR"
+  git worktree remove --force "$worktree" >/dev/null 2>&1 || true
+  rm -rf "$worktree"
+  trap - RETURN
+}
+
+case "$MODE" in
+  --check)
+    require_env
+    compose_validate
+    required_services
+    check_current
+    ;;
+
+  --backup)
+    require_env
+    backup_db
+    ;;
+
+  --deploy)
+    deploy
+    ;;
+
+  --rollback)
+    rollback "$TAG"
+    ;;
+
+  *)
+    cat <<USAGE
 Usage:
   ./deploy.sh --check
   ./deploy.sh --backup
   ./deploy.sh --deploy
   ./deploy.sh --rollback <tag>
-
-Examples:
-  ./deploy.sh --check
-  ./deploy.sh --backup
-  ./deploy.sh --deploy
-  ./deploy.sh --rollback v0.4.0-infra-stable
 USAGE
-  exit 1
-}
-
-cleanup_on_exit() {
-  if [[ "${DEPLOY_SUCCESS}" != "1" && "${MODE}" == "deploy" ]]; then
-    printf '\nDeployment did not complete successfully.\n' >&2
-    printf 'No automatic rollback was performed.\n' >&2
-    printf 'Inspect with: docker compose ps\n' >&2
-    printf 'Logs: docker compose logs --tail 100 backend frontend\n' >&2
-  fi
-}
-
-trap cleanup_on_exit EXIT
-
-case "${1:-}" in
-  --check)
-    MODE="check"
-    ;;
-  --backup)
-    MODE="backup"
-    ;;
-  --deploy)
-    MODE="deploy"
-    ;;
-  --rollback)
-    MODE="rollback"
-    ROLLBACK_TAG="${2:-}"
-    [[ -n "$ROLLBACK_TAG" ]] || usage
-    ;;
-  *)
-    usage
+    exit 1
     ;;
 esac
-
-[[ -f .env ]] || fail ".env is missing."
-[[ -f docker-compose.yml ]] || fail "docker-compose.yml not found."
-
-if [[ -d .git ]]; then
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    fail "Git working tree is not clean. Commit changes before deployment."
-  fi
-fi
-
-if [[ "$MODE" == "rollback" ]]; then
-  git rev-parse --verify "refs/tags/${ROLLBACK_TAG}^{commit}" >/dev/null 2>&1 \
-    || fail "Git tag not found: ${ROLLBACK_TAG}"
-
-  CURRENT_COMMIT="$(git rev-parse HEAD)"
-  TARGET_COMMIT="$(git rev-list -n 1 "${ROLLBACK_TAG}")"
-
-  log "Rollback target"
-  printf 'Current: %s\n' "$CURRENT_COMMIT"
-  printf 'Target: %s (%s)\n' "$TARGET_COMMIT" "$ROLLBACK_TAG"
-
-  [[ "$CURRENT_COMMIT" != "$TARGET_COMMIT" ]] \
-    || fail "Target tag is already the current commit."
-fi
-
-mkdir -p "$BACKUP_DIR"
-
-log "Checking compose configuration"
-docker compose config >/dev/null
-
-log "Checking required services"
-for service in postgres backend frontend; do
-  docker compose config --services | grep -qx "$service" \
-    || fail "Required service missing: $service"
-done
-
-if [[ "$MODE" == "check" ]]; then
-  log "Checking current service state"
-  docker compose ps
-
-  log "Checking local frontend"
-  curl -fsS --max-time 5 \
-    http://127.0.0.1:3100 \
-    >/dev/null \
-    || fail "Local frontend is not responding"
-
-  log "Checking backend health"
-  docker exec hinaa-portal-backend \
-    python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=5)' \
-    >/dev/null \
-    || fail "Backend health check failed"
-
-  log "Checking Alembic"
-  docker compose exec -T backend alembic current
-
-  log "Checking public panel"
-  PUBLIC_CODE="$(
-    curl -sS \
-      --max-time 10 \
-      -o /dev/null \
-      -w '%{http_code}' \
-      https://panel.hinaa.ir || true
-  )"
-
-  [[ "$PUBLIC_CODE" == "200" ]] \
-    || fail "Public panel returned HTTP ${PUBLIC_CODE}"
-
-  DEPLOY_SUCCESS=1
-  printf '\nPreflight check passed.\n'
-  exit 0
-fi
-
-log "Creating PostgreSQL backup"
-BACKUP_FILE="${BACKUP_DIR}/hinaa-pre-${MODE}-${STAMP}.dump"
-
-docker exec hinaa-portal-postgres \
-  pg_dump -U hinaa -d hinaa -Fc \
-  > "$BACKUP_FILE"
-
-chmod 600 "$BACKUP_FILE"
-
-[[ -s "$BACKUP_FILE" ]] || fail "PostgreSQL backup is empty"
-
-printf 'Backup: %s\n' "$BACKUP_FILE"
-
-if [[ "$MODE" == "backup" ]]; then
-  DEPLOY_SUCCESS=1
-  printf '\nBackup completed successfully.\n'
-  exit 0
-fi
-
-BUILD_DIR=""
-
-if [[ "$MODE" == "rollback" ]]; then
-  BUILD_DIR="$(mktemp -d)"
-
-  cleanup_build_dir() {
-    [[ -n "$BUILD_DIR" ]] && rm -rf "$BUILD_DIR"
-  }
-
-  trap cleanup_build_dir EXIT
-
-  log "Checking out rollback tag into temporary worktree"
-
-  git worktree add --detach "$BUILD_DIR" "$ROLLBACK_TAG" >/dev/null
-
-  cp .env "$BUILD_DIR/.env"
-
-  cd "$BUILD_DIR"
-else
-  log "Using current Git working tree"
-fi
-
-log "Validating selected source"
-docker compose config >/dev/null
-
-log "Building backend and frontend"
-docker compose build backend frontend
-
-log "Starting PostgreSQL"
-docker compose up -d postgres
-
-log "Waiting for PostgreSQL"
-
-for _ in $(seq 1 30); do
-  if docker compose exec -T postgres \
-      pg_isready \
-      -U "${POSTGRES_USER:-hinaa}" \
-      -d "${POSTGRES_DB:-hinaa}" \
-      >/dev/null 2>&1
-  then
-    break
-  fi
-
-  sleep 1
-done
-
-docker compose exec -T postgres \
-  pg_isready \
-  -U "${POSTGRES_USER:-hinaa}" \
-  -d "${POSTGRES_DB:-hinaa}" \
-  >/dev/null 2>&1 \
-  || fail "PostgreSQL did not become ready"
-
-log "Starting backend"
-docker compose up -d backend
-
-log "Waiting for backend"
-
-BACKEND_OK=0
-
-for _ in $(seq 1 30); do
-  if docker exec hinaa-portal-backend \
-      python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3)' \
-      >/dev/null 2>&1
-  then
-    BACKEND_OK=1
-    break
-  fi
-
-  sleep 1
-done
-
-[[ "$BACKEND_OK" == "1" ]] || {
-  docker compose logs --tail 100 backend >&2
-  fail "Backend health check failed"
-}
-
-log "Checking Alembic state"
-docker compose exec -T backend alembic current
-
-log "Starting frontend"
-docker compose up -d frontend
-
-log "Waiting for frontend"
-
-FRONTEND_OK=0
-
-for _ in $(seq 1 30); do
-  if curl -fsS \
-      --max-time 5 \
-      http://127.0.0.1:3100 \
-      >/dev/null 2>&1
-  then
-    FRONTEND_OK=1
-    break
-  fi
-
-  sleep 1
-done
-
-[[ "$FRONTEND_OK" == "1" ]] || {
-  docker compose logs --tail 100 frontend >&2
-  fail "Frontend health check failed"
-}
-
-log "Smoke test: public panel"
-
-PUBLIC_CODE="$(
-  curl -sS \
-    --max-time 10 \
-    -o /dev/null \
-    -w '%{http_code}' \
-    https://panel.hinaa.ir || true
-)"
-
-[[ "$PUBLIC_CODE" == "200" ]] \
-  || fail "Public panel returned HTTP ${PUBLIC_CODE}"
-
-log "Deployment status"
-docker compose ps
-
-DEPLOY_SUCCESS=1
-
-printf '\nOperation completed successfully.\n'
-printf 'Mode: %s\n' "$MODE"
-printf 'Backup: %s\n' "$BACKUP_FILE"
-
-if [[ "$MODE" == "rollback" ]]; then
-  printf 'Rollback target: %s\n' "$ROLLBACK_TAG"
-fi
-
-printf 'Panel: https://panel.hinaa.ir\n'
