@@ -16,7 +16,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -83,6 +83,26 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(32), default="user")
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="active",
+    )
+    chat_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+    )
+    api_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+    )
+    mlops_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+    )
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
