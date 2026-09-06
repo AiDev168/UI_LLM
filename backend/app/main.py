@@ -12,7 +12,7 @@ import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from cryptography.fernet import Fernet
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -469,6 +469,43 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(
+        min_length=1,
+        max_length=128,
+    )
+    new_password: str = Field(
+        min_length=8,
+        max_length=128,
+    )
+
+
+class AdminCreateUserIn(BaseModel):
+    name: str = Field(
+        min_length=2,
+        max_length=120,
+    )
+    email: str = Field(
+        min_length=5,
+        max_length=255,
+    )
+    password: str = Field(
+        min_length=8,
+        max_length=128,
+    )
+    chat_enabled: bool = True
+    api_enabled: bool = True
+    mlops_enabled: bool = False
+
+
+class AdminUserUpdateIn(BaseModel):
+    status: str | None = None
+    chat_enabled: bool | None = None
+    api_enabled: bool | None = None
+    mlops_enabled: bool | None = None
+    role: str | None = None
+
+
 class KeyCreateIn(BaseModel):
     alias: str = Field(
         min_length=1,
@@ -543,10 +580,7 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/auth/register")
-def register(
-    payload: RegisterIn,
-    response: Response,
-) -> dict[str, Any]:
+def register(payload: RegisterIn) -> dict[str, Any]:
     email = payload.email.strip().lower()
 
     with db() as session:
@@ -562,32 +596,29 @@ def register(
             email=email,
             name=payload.name.strip(),
             password_hash=ph.hash(payload.password),
+            role="user",
+            status="pending",
+            chat_enabled=False,
+            api_enabled=False,
+            mlops_enabled=False,
+            must_change_password=False,
         )
 
         session.add(user)
         session.commit()
         session.refresh(user)
 
-        token = jwt_encode(user)
-
-        data = {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "role": user.role,
+        return {
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role,
+                "status": user.status,
+            },
+            "pending": True,
+            "message": "درخواست ثبت‌نام شما ثبت شد و پس از تأیید مدیر فعال خواهد شد.",
         }
-
-    response.set_cookie(
-        settings.cookie_name,
-        token,
-        httponly=True,
-        secure=settings.cookie_secure,
-        samesite="lax",
-        max_age=7 * 86400,
-        path="/",
-    )
-
-    return {"user": data}
 
 
 @app.post("/auth/login")
@@ -619,6 +650,24 @@ def login(
                 "ایمیل یا رمز عبور نادرست است",
             ) from exc
 
+        if user.status == "pending":
+            raise HTTPException(
+                403,
+                "حساب کاربری شما هنوز توسط مدیر تأیید نشده است",
+            )
+
+        if user.status in {"disabled", "rejected"}:
+            raise HTTPException(
+                403,
+                "دسترسی این حساب غیرفعال است",
+            )
+
+        if user.status != "active":
+            raise HTTPException(
+                403,
+                "وضعیت حساب کاربری معتبر نیست",
+            )
+
         token = jwt_encode(user)
 
         data = {
@@ -626,6 +675,11 @@ def login(
             "name": user.name,
             "email": user.email,
             "role": user.role,
+            "status": user.status,
+            "chat_enabled": user.chat_enabled,
+            "api_enabled": user.api_enabled,
+            "mlops_enabled": user.mlops_enabled,
+            "must_change_password": user.must_change_password,
         }
 
     response.set_cookie(
@@ -638,7 +692,213 @@ def login(
         path="/",
     )
 
-    return {"user": data}
+    return {
+        "user": data,
+        "must_change_password": user.must_change_password,
+    }
+
+
+def require_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    if user.role != "admin":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "دسترسی مدیر لازم است",
+        )
+    return user
+
+
+def require_permission(permission: str):
+    def dependency(
+        user: User = Depends(get_current_user),
+    ) -> User:
+        if user.role == "admin":
+            return user
+
+        if user.must_change_password:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "ابتدا باید رمز عبور خود را تغییر دهید",
+            )
+
+        allowed = {
+            "chat": user.chat_enabled,
+            "api": user.api_enabled,
+            "mlops": user.mlops_enabled,
+        }
+
+        if not allowed.get(permission, False):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "دسترسی این سرویس برای حساب شما فعال نیست",
+            )
+
+        return user
+
+    return dependency
+
+
+def require_not_forced_change(
+    user: User = Depends(get_current_user),
+) -> User:
+    if user.role != "admin" and user.must_change_password:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "ابتدا باید رمز عبور خود را تغییر دهید",
+        )
+    return user
+
+
+@app.post("/auth/change-password")
+def change_password(
+    payload: ChangePasswordIn,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    with db() as session:
+        user = session.get(User, current_user.id)
+
+        if not user:
+            raise HTTPException(401, "کاربر پیدا نشد")
+
+        try:
+            ph.verify(
+                user.password_hash,
+                payload.current_password,
+            )
+        except VerifyMismatchError as exc:
+            raise HTTPException(
+                400,
+                "رمز عبور فعلی نادرست است",
+            ) from exc
+
+        user.password_hash = ph.hash(payload.new_password)
+        user.must_change_password = False
+        session.commit()
+
+        return {
+            "ok": True,
+            "message": "رمز عبور با موفقیت تغییر کرد",
+        }
+
+
+@app.get("/admin/users")
+def admin_list_users(
+    _admin: User = Depends(require_admin),
+) -> dict[str, Any]:
+    with db() as session:
+        users = session.scalars(
+            select(User).order_by(User.created_at.desc())
+        ).all()
+
+        return {
+            "data": [
+                {
+                    "id": user.id,
+                    "name": user.name,
+                    "email": user.email,
+                    "role": user.role,
+                    "status": user.status,
+                    "chat_enabled": user.chat_enabled,
+                    "api_enabled": user.api_enabled,
+                    "mlops_enabled": user.mlops_enabled,
+                    "must_change_password": user.must_change_password,
+                    "created_at": user.created_at,
+                }
+                for user in users
+            ]
+        }
+
+
+@app.post("/admin/users")
+def admin_create_user(
+    payload: AdminCreateUserIn,
+    _admin: User = Depends(require_admin),
+) -> dict[str, Any]:
+    email = payload.email.strip().lower()
+
+    with db() as session:
+        if session.scalar(
+            select(User).where(User.email == email)
+        ):
+            raise HTTPException(
+                409,
+                "این ایمیل قبلاً ثبت شده است",
+            )
+
+        user = User(
+            email=email,
+            name=payload.name.strip(),
+            password_hash=ph.hash(payload.password),
+            role="user",
+            status="active",
+            chat_enabled=payload.chat_enabled,
+            api_enabled=payload.api_enabled,
+            mlops_enabled=payload.mlops_enabled,
+            must_change_password=True,
+        )
+
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+        return {
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role,
+                "status": user.status,
+                "chat_enabled": user.chat_enabled,
+                "api_enabled": user.api_enabled,
+                "mlops_enabled": user.mlops_enabled,
+                "must_change_password": user.must_change_password,
+            }
+        }
+
+
+@app.patch("/admin/users/{user_id}")
+def admin_update_user(
+    user_id: str,
+    payload: AdminUserUpdateIn,
+    _admin: User = Depends(require_admin),
+) -> dict[str, Any]:
+    allowed_statuses = {"pending", "active", "disabled", "rejected"}
+    allowed_roles = {"user", "admin"}
+
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "status" in updates and updates["status"] not in allowed_statuses:
+        raise HTTPException(400, "وضعیت کاربر نامعتبر است")
+
+    if "role" in updates and updates["role"] not in allowed_roles:
+        raise HTTPException(400, "نقش کاربر نامعتبر است")
+
+    with db() as session:
+        user = session.get(User, user_id)
+
+        if not user:
+            raise HTTPException(404, "کاربر پیدا نشد")
+
+        for key, value in updates.items():
+            setattr(user, key, value)
+
+        session.commit()
+        session.refresh(user)
+
+        return {
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role,
+                "status": user.status,
+                "chat_enabled": user.chat_enabled,
+                "api_enabled": user.api_enabled,
+                "mlops_enabled": user.mlops_enabled,
+                "must_change_password": user.must_change_password,
+            }
+        }
 
 
 @app.post("/auth/logout")
@@ -660,6 +920,21 @@ def me(
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "status": user.status,
+        "chat_enabled": user.chat_enabled,
+        "api_enabled": user.api_enabled,
+        "mlops_enabled": user.mlops_enabled,
+        "must_change_password": user.must_change_password,
+    }
+
+
+@app.get("/mlops/access")
+def mlops_access(
+    user: User = Depends(require_permission("mlops")),
+) -> dict[str, str]:
+    return {
+        "url": "https://app.hinaa.ir",
+        "service": "clearml",
     }
 
 
@@ -667,7 +942,7 @@ def me(
 # Models
 # ---------------------------------------------------------------------------
 
-@app.get("/models")
+@app.get("/models", dependencies=[Depends(require_permission("chat"))])
 async def models(
     _: User = Depends(get_current_user),
 ) -> Any:
@@ -687,7 +962,7 @@ async def models(
 # API Keys
 # ---------------------------------------------------------------------------
 
-@app.get("/api-keys")
+@app.get("/api-keys", dependencies=[Depends(require_permission("api"))])
 def list_keys(
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -706,7 +981,7 @@ def list_keys(
     return {"data": records}
 
 
-@app.post("/api-keys")
+@app.post("/api-keys", dependencies=[Depends(require_permission("api"))])
 async def create_key(
     payload: KeyCreateIn,
     user: User = Depends(get_current_user),
@@ -776,7 +1051,7 @@ async def create_key(
     }
 
 
-@app.delete("/api-keys/{key_id}")
+@app.delete("/api-keys/{key_id}", dependencies=[Depends(require_permission("api"))])
 async def delete_key(
     key_id: str,
     user: User = Depends(get_current_user),
@@ -818,7 +1093,7 @@ async def delete_key(
     return {"ok": True}
 
 
-@app.post("/api-keys/{key_id}/rotate")
+@app.post("/api-keys/{key_id}/rotate", dependencies=[Depends(require_permission("api"))])
 async def rotate_key(
     key_id: str,
     user: User = Depends(get_current_user),
@@ -958,7 +1233,7 @@ def dashboard(
 # Conversations
 # ---------------------------------------------------------------------------
 
-@app.get("/conversations")
+@app.get("/conversations", dependencies=[Depends(require_permission("chat"))])
 def list_conversations(
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -979,7 +1254,7 @@ def list_conversations(
         }
 
 
-@app.post("/conversations")
+@app.post("/conversations", dependencies=[Depends(require_permission("chat"))])
 def create_conversation(
     payload: ConversationCreateIn,
     user: User = Depends(get_current_user),
@@ -1007,7 +1282,7 @@ def create_conversation(
         }
 
 
-@app.get("/conversations/{conversation_id}")
+@app.get("/conversations/{conversation_id}", dependencies=[Depends(require_permission("chat"))])
 def get_conversation(
     conversation_id: str,
     user: User = Depends(get_current_user),
@@ -1046,7 +1321,7 @@ def get_conversation(
         }
 
 
-@app.delete("/conversations/{conversation_id}")
+@app.delete("/conversations/{conversation_id}", dependencies=[Depends(require_permission("chat"))])
 def delete_conversation(
     conversation_id: str,
     user: User = Depends(get_current_user),
@@ -1071,7 +1346,7 @@ def delete_conversation(
     return {"ok": True}
 
 
-@app.post("/conversations/{conversation_id}/messages")
+@app.post("/conversations/{conversation_id}/messages", dependencies=[Depends(require_permission("chat"))])
 def create_message(
     conversation_id: str,
     payload: MessageCreateIn,
@@ -1265,7 +1540,7 @@ async def proxy_stream(
                 yield chunk
 
 
-@app.post("/chat/completions")
+@app.post("/chat/completions", dependencies=[Depends(require_permission("chat"))])
 async def chat(
     payload: ChatIn,
     user: User = Depends(get_current_user),

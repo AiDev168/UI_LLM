@@ -2,7 +2,17 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-type User = { id: string; name: string; email: string; role: string };
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: "pending" | "active" | "disabled" | "rejected";
+  chat_enabled: boolean;
+  api_enabled: boolean;
+  mlops_enabled: boolean;
+  must_change_password: boolean;
+};
 type Model = { id: string };
 type Key = { id: string; alias: string; masked: string; models: string[]; rpm_limit: number | null; spend: number; status: string; expires_at?: string | null };
 type Msg = { role: "user" | "assistant"; content: string; id?: string };
@@ -97,6 +107,7 @@ export default function Portal() {
   const [newKey, setNewKey] = useState<any>(null);
   const [formError, setFormError] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [forcePasswordChange, setForcePasswordChange] = useState(false);
 
   const notify = (message: string, type: "success" | "error" = "success") => {
     setToast({ message, type });
@@ -109,14 +120,40 @@ export default function Portal() {
   useEffect(() => { document.documentElement.dataset.theme = theme; window.localStorage.setItem("hinaa-theme", theme); }, [theme]);
 
   const load = async () => {
+    setLoading(true);
     try {
       const me = await api("/me");
       setUser(me);
-      const [m, k, d] = await Promise.all([api("/models"), api("/api-keys"), api("/dashboard")]);
-      setModels(m.data || []); setKeys(k.data || []); setDashboard(d); setSelectedModel((current) => current || m.data?.[0]?.id || "Qwen3-32B");
-      try { const c = await api("/conversations"); setConversations(c.data || []); setHistoryAvailable(true); } catch { setConversations([]); setHistoryAvailable(false); }
-    } catch { setUser(null); }
-    finally { setLoading(false); }
+      setForcePasswordChange(Boolean(me.must_change_password));
+      if (me.must_change_password) {
+        setModels([]); setKeys([]); setDashboard(null); setConversations([]); setHistoryAvailable(false);
+        return;
+      }
+
+      const [m, k, d, c] = await Promise.allSettled([
+        api("/models"),
+        me.role === "admin" || me.api_enabled ? api("/api-keys") : Promise.reject(new Error("API disabled")),
+        api("/dashboard"),
+        me.role === "admin" || me.chat_enabled ? api("/conversations") : Promise.reject(new Error("Chat disabled")),
+      ]);
+
+      const modelsResult = m.status === "fulfilled" ? m.value : null;
+      const keysResult = k.status === "fulfilled" ? k.value : null;
+      const dashboardResult = d.status === "fulfilled" ? d.value : null;
+      const conversationsResult = c.status === "fulfilled" ? c.value : null;
+
+      setModels(modelsResult?.data || []);
+      setKeys(keysResult?.data || []);
+      setDashboard(dashboardResult);
+      setSelectedModel((current) => current || modelsResult?.data?.[0]?.id || "Qwen3-32B");
+      setConversations(conversationsResult?.data || []);
+      setHistoryAvailable(Boolean(conversationsResult));
+    } catch {
+      setUser(null);
+      setForcePasswordChange(false);
+    } finally {
+      setLoading(false);
+    }
   };
   useEffect(() => { load(); }, []);
   const refreshUsage = async () => {
@@ -132,8 +169,34 @@ export default function Portal() {
   };
   useEffect(() => { if (user && active === "usage") refreshUsage(); }, [user, active]);
 
-  const submitAuth = async (e: FormEvent<HTMLFormElement>) => { e.preventDefault(); setFormError(""); const fd = new FormData(e.currentTarget); const body = authMode === "login" ? { email: fd.get("email"), password: fd.get("password") } : { name: fd.get("name"), email: fd.get("email"), password: fd.get("password") }; try { await api(`/auth/${authMode}`, { method: "POST", body: JSON.stringify(body) }); await load(); } catch (err: any) { setFormError(err.message); } };
+  const submitAuth = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setFormError("");
+    const fd = new FormData(e.currentTarget);
+    const body = authMode === "login"
+      ? { email: fd.get("email"), password: fd.get("password") }
+      : { name: fd.get("name"), email: fd.get("email"), password: fd.get("password") };
+    try {
+      const result = await api(`/auth/${authMode}`, { method: "POST", body: JSON.stringify(body) });
+      if (authMode === "register" && result?.pending) {
+        setAuthMode("login");
+        setFormError(result.message || "درخواست ثبت‌نام شما ثبت شد و پس از تأیید مدیر فعال خواهد شد.");
+        return;
+      }
+      await load();
+    } catch (err: any) {
+      setFormError(err.message);
+    }
+  };
   const logout = async () => { try { await api("/auth/logout", { method: "POST" }); } finally { setUser(null); } };
+  const changePassword = async (currentPassword: string, newPassword: string) => {
+    await api("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    await load();
+    setFormError("");
+    notify("رمز عبور با موفقیت تغییر کرد");
+  };
 
   const newConversation = () => { abortRef.current?.abort(); setConversationId(null); setMessages([]); setInput(""); setEditingIndex(null); setFormError(""); setActive("chat"); };
   const openConversation = async (id: string) => { if (!historyAvailable) return; try { const result = await api(`/conversations/${id}`); const raw = result.data.messages || []; setConversationId(id); setMessages(raw.filter((m: any) => m.role !== "system").map((m: any, i: number) => ({ role: m.role, content: m.content, id: m.id || `${id}-${i}` }))); setSelectedModel(result.data.model || selectedModel); setEditingIndex(null); setFormError(""); setActive("chat"); } catch (err: any) { setFormError(err.message); } };
@@ -184,10 +247,11 @@ export default function Portal() {
   const deleteKey = async (id: string) => { if (!confirm("این کلید لغو شود؟")) return; try { await api(`/api-keys/${id}`, { method: "DELETE" }); await load(); } catch (err: any) { setFormError(err.message); } };
   const rotateKey = async (id: string) => { if (!confirm("کلید فعلی با یک کلید جدید جایگزین شود؟")) return; try { const data = await api(`/api-keys/${id}/rotate`, { method: "POST" }); setNewKey(data); notify("کلید API با موفقیت چرخانده شد"); await load(); } catch (err: any) { setFormError(err.message); } };
 
-  const sidebar = useMemo(() => [["dashboard", "داشبورد", "home"], ["chat", "چت", "chat"], ["keys", "کلیدهای API", "key"], ["usage", "مصرف و Usage", "chart"], ["account", "حساب کاربری", "user"], ["mlops", "MLOps", "chart"]], []);
-  const pageTitle = active === "dashboard" ? "داشبورد" : active === "chat" ? "گفتگو" : active === "keys" ? "کلیدهای API" : active === "usage" ? "مصرف و Usage" : "حساب کاربری";
+  const sidebar = useMemo(() => { const items: any[] = [["dashboard", "داشبورد", "home"]]; if (user?.role === "admin" || user?.chat_enabled) items.push(["chat", "چت", "chat"]); if (user?.role === "admin" || user?.api_enabled) items.push(["keys", "کلیدهای API", "key"]); items.push(["usage", "مصرف و Usage", "chart"], ["account", "حساب کاربری", "user"]); if (user?.role === "admin" || user?.mlops_enabled) items.push(["mlops", "MLOps", "chart"]); if (user?.role === "admin") items.push(["admin", "مدیریت کاربران", "user"]); return items; }, [user]);
+  const pageTitle = active === "dashboard" ? "داشبورد" : active === "chat" ? "گفتگو" : active === "keys" ? "کلیدهای API" : active === "usage" ? "مصرف و Usage" : active === "account" ? "حساب کاربری" : active === "admin" ? "مدیریت کاربران" : "MLOps";
   if (loading) return <div className="boot"><div className="brand-mark">T</div><div>در حال راه‌اندازی پنل…</div></div>;
   if (!user) return <Auth mode={authMode} setMode={setAuthMode} submit={submitAuth} error={formError} />;
+  if (forcePasswordChange) return <ChangePassword user={user} onChange={changePassword} onLogout={logout} error={formError} />;
 
   return <main className="app-shell">
     {toast && (
@@ -196,13 +260,108 @@ export default function Portal() {
         <button aria-label="بستن" onClick={() => setToast(null)}>×</button>
       </div>
     )}
-    <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={() => id === "mlops" ? window.open("https://app.hinaa.ir", "_blank", "noopener,noreferrer") : setActive(id)}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
-    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><button className="icon-btn" aria-label="تغییر تم" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"}/></button><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} />}</section>
+    <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={async () => { if (id === "mlops") { try { const gate = await api("/mlops/access"); window.open(gate.url, "_blank", "noopener,noreferrer"); } catch (err: any) { setFormError(err.message); } } else { setActive(id); } }}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
+    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><button className="icon-btn" aria-label="تغییر تم" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"}/></button><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}</section>
     {keyModal && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کلید API</h3><button onClick={() => setKeyModal(false)}>×</button></div><form className="form-stack" onSubmit={createKey}><label>نام کلید<input name="alias" required placeholder="Production App" /></label><label>مدل<input value={selectedModel} readOnly /></label><label>محدودیت RPM<input name="rpm" type="number" defaultValue={30} min={1} /></label><label>انقضا<select name="duration" defaultValue="30d"><option value="30d">۳۰ روز</option><option value="90d">۹۰ روز</option><option value="365d">۱ سال</option><option value="">بدون انقضا</option></select></label>{formError && <div className="error-box">{formError}</div>}<button className="primary" type="submit">ایجاد کلید</button></form></div></div>}
   </main>;
 }
 
 function Auth({ mode, setMode, submit, error }: any) { return <main className="auth-shell"><section className="auth-card"><div className="brand-lockup"><div className="brand-mark large">T</div><div><b>TaHa</b><span>هوش مصنوعی حرفه‌ای</span></div></div><h1>{mode === "login" ? "خوش آمدید" : "ساخت حساب کاربری"}</h1><p className="muted">دسترسی به چت و سرویس‌های هوش مصنوعی TaHa</p><form onSubmit={submit} className="form-stack">{mode === "register" && <label>نام<input name="name" required placeholder="نام شما" /></label>}<label>ایمیل<input name="email" type="email" required placeholder="you@example.com" /></label><label>رمز عبور<input name="password" type="password" minLength={8} required placeholder="حداقل ۸ کاراکتر" /></label>{error && <div className="error-box">{error}</div>}<button className="primary full" type="submit">{mode === "login" ? "ورود" : "ثبت‌نام"}</button></form><button className="link-btn" onClick={() => setMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "حساب ندارید؟ ثبت‌نام کنید" : "حساب دارید؟ وارد شوید"}</button></section></main>; }
+
+function ChangePassword({ user, onChange, onLogout, error }: any) {
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setBusy(true); setLocalError("");
+    const fd = new FormData(e.currentTarget);
+    const currentPassword = String(fd.get("current_password") || "");
+    const newPassword = String(fd.get("new_password") || "");
+    const confirmPassword = String(fd.get("confirm_password") || "");
+    if (newPassword !== confirmPassword) { setLocalError("تکرار رمز عبور یکسان نیست"); setBusy(false); return; }
+    try { await onChange(currentPassword, newPassword); }
+    catch (err: any) { setLocalError(err.message || "تغییر رمز عبور ناموفق بود"); }
+    finally { setBusy(false); }
+  };
+  return <main className="auth-shell"><section className="auth-card">
+    <div className="brand-lockup"><div className="brand-mark large">T</div><div><b>TaHa</b><span>هوش مصنوعی حرفه‌ای</span></div></div>
+    <h1>تغییر اجباری رمز عبور</h1>
+    <p className="muted">برای ادامه استفاده از پنل، ابتدا رمز عبور حساب {user?.email} را تغییر دهید.</p>
+    <form onSubmit={submit} className="form-stack">
+      <label>رمز عبور فعلی<input name="current_password" type="password" required /></label>
+      <label>رمز عبور جدید<input name="new_password" type="password" minLength={8} required placeholder="حداقل ۸ کاراکتر" /></label>
+      <label>تکرار رمز عبور جدید<input name="confirm_password" type="password" minLength={8} required /></label>
+      {(localError || error) && <div className="error-box">{localError || error}</div>}
+      <button className="primary full" type="submit" disabled={busy}>{busy ? "در حال تغییر…" : "تغییر رمز عبور"}</button>
+    </form>
+    <button className="link-btn" onClick={onLogout}>خروج</button>
+  </section></main>;
+}
+
+function AdminUsers({ notify }: any) {
+  const [users, setUsers] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+
+  const loadUsers = async () => {
+    setBusy(true); setError("");
+    try { const result = await api("/admin/users"); setUsers(result.data || []); }
+    catch (err: any) { setError(err.message || "خطا در دریافت کاربران"); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { loadUsers(); }, []);
+
+  const updateUser = async (id: string, patch: any) => {
+    try {
+      await api(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      await loadUsers(); notify("اطلاعات کاربر به‌روزرسانی شد");
+    } catch (err: any) { setError(err.message || "خطا در به‌روزرسانی کاربر"); }
+  };
+
+  const createUser = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setError("");
+    const fd = new FormData(e.currentTarget);
+    try {
+      await api("/admin/users", { method: "POST", body: JSON.stringify({
+        name: fd.get("name"), email: fd.get("email"), password: fd.get("password"),
+        chat_enabled: fd.get("chat_enabled") === "on", api_enabled: fd.get("api_enabled") === "on", mlops_enabled: fd.get("mlops_enabled") === "on",
+      }) });
+      setShowCreate(false); await loadUsers(); notify("کاربر ایجاد شد و باید در اولین ورود رمز خود را تغییر دهد");
+    } catch (err: any) { setError(err.message || "خطا در ایجاد کاربر"); }
+  };
+
+  const statusLabel: Record<string,string> = { pending: "در انتظار", active: "فعال", disabled: "غیرفعال", rejected: "رد شده" };
+  return <div className="content">
+    <div className="page-intro"><div><div className="eyebrow">ADMIN CENTER</div><h1>مدیریت کاربران</h1><p>تأیید ثبت‌نام، تغییر وضعیت، نقش و سه دسترسی مستقل سرویس‌ها.</p></div><button className="primary" onClick={() => setShowCreate(true)}><Icon name="plus"/>ساخت کاربر</button></div>
+    {error && <div className="global-notice">{error}<button onClick={() => setError("")}>×</button></div>}
+    <div className="admin-table" style={{display:"grid",gap:12}}>
+      {users.map((u) => <div key={u.id} className="dashboard-card" style={{padding:18}}>
+        <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"center",flexWrap:"wrap"}}>
+          <div><strong>{u.name}</strong><div className="muted">{u.email}</div></div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <select value={u.status} onChange={(e) => updateUser(u.id,{status:e.target.value})}>{Object.entries(statusLabel).map(([v,l]) => <option key={v} value={v}>{l}</option>)}</select>
+            <select value={u.role} onChange={(e) => updateUser(u.id,{role:e.target.value})}><option value="user">کاربر</option><option value="admin">مدیر</option></select>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:18,flexWrap:"wrap",marginTop:14}}>
+          <label><input type="checkbox" checked={u.chat_enabled} onChange={(e) => updateUser(u.id,{chat_enabled:e.target.checked})}/> Chat</label>
+          <label><input type="checkbox" checked={u.api_enabled} onChange={(e) => updateUser(u.id,{api_enabled:e.target.checked})}/> API Key</label>
+          <label><input type="checkbox" checked={u.mlops_enabled} onChange={(e) => updateUser(u.id,{mlops_enabled:e.target.checked})}/> MLOps</label>
+          {u.must_change_password && <span className="pill">نیازمند تغییر رمز</span>}
+        </div>
+        {u.status === "pending" && <div style={{display:"flex",gap:8,marginTop:14}}><button className="primary" onClick={() => updateUser(u.id,{status:"active"})}>تأیید</button><button className="danger" onClick={() => updateUser(u.id,{status:"rejected"})}>رد</button></div>}
+      </div>)}
+      {!busy && users.length === 0 && <div className="empty-card">کاربری ثبت نشده است.</div>}
+      {busy && <div className="empty-card">در حال دریافت کاربران…</div>}
+    </div>
+    {showCreate && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کاربر جدید</h3><button onClick={() => setShowCreate(false)}>×</button></div><form className="form-stack" onSubmit={createUser}>
+      <label>نام<input name="name" required minLength={2}/></label><label>ایمیل<input name="email" type="email" required/></label><label>رمز موقت<input name="password" type="password" minLength={8} required/></label>
+      <label><input name="chat_enabled" type="checkbox" defaultChecked/> Chat</label><label><input name="api_enabled" type="checkbox" defaultChecked/> API Key</label><label><input name="mlops_enabled" type="checkbox"/> MLOps</label>
+      {error && <div className="error-box">{error}</div>}<button className="primary" type="submit">ایجاد کاربر</button>
+    </form></div></div>}
+  </div>;
+}
+
 function Dashboard({ user, data, keys, onChat, onKeys }: any) {
   const activeKeys = keys.filter((k: Key) => k.status === "active").length;
   const totalSpend = Number(data?.spend || 0);
