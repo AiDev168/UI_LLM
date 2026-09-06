@@ -70,10 +70,20 @@ backup_db() {
   local file
   file="$BACKUP_DIR/hinaa-$(date -u '+%Y%m%dT%H%M%SZ').dump"
 
+  log "Reading PostgreSQL credentials from running container"
+  local pg_user
+  local pg_db
+
+  pg_user="$($COMPOSE exec -T postgres sh -lc 'printf "%s" "$POSTGRES_USER"')"
+  pg_db="$($COMPOSE exec -T postgres sh -lc 'printf "%s" "$POSTGRES_DB"')"
+
+  [[ -n "$pg_user" ]] || die "POSTGRES_USER is empty in postgres container."
+  [[ -n "$pg_db" ]] || die "POSTGRES_DB is empty in postgres container."
+
   log "Creating PostgreSQL backup"
   $COMPOSE exec -T postgres pg_dump \
-    -U "${POSTGRES_USER:-portal}" \
-    -d "${POSTGRES_DB:-portal}" \
+    -U "$pg_user" \
+    -d "$pg_db" \
     -Fc > "$file"
 
   chmod 600 "$file"
