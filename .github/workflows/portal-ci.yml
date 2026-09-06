@@ -36,14 +36,18 @@ jobs:
       - name: Python syntax
         run: |
           python -m py_compile backend/app/main.py
+          python -m py_compile backend/alembic/env.py
 
-      - name: Alembic validation
+      - name: Import application metadata
         env:
           DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
+          JWT_SECRET: ci-jwt-secret
+          FERNET_KEY: ZGVtb19mb3JfY2lfb25seV9ub3Rfc2VjcmV0X2tleQ==
+          LITELLM_MASTER_KEY: sk-ci-placeholder
         run: |
           python - <<'PY'
           from app.main import Base
-          print("SQLAlchemy metadata loaded:", len(Base.metadata.tables))
+          print("SQLAlchemy tables:", sorted(Base.metadata.tables))
           PY
 
   frontend:
