@@ -210,8 +210,6 @@ class Message(Base):
 # IMPORTANT:
 # This does not perform migrations or alter existing tables.
 # It only creates missing tables in a fresh installation.
-Base.metadata.create_all(engine)
-
 
 app = FastAPI(
     title="Hinaa Portal API",
