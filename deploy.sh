@@ -6,7 +6,9 @@ cd "$(dirname "$0")"
 BACKUP_DIR="${HOME}/llm-stack/hinaa-portal-backups"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
-MODE="check"
+MODE=""
+ROLLBACK_TAG=""
+
 DEPLOY_SUCCESS=0
 
 log() {
@@ -24,11 +26,13 @@ Usage:
   ./deploy.sh --check
   ./deploy.sh --backup
   ./deploy.sh --deploy
+  ./deploy.sh --rollback <tag>
 
-Modes:
-  --check    Validate configuration and environment only.
-  --backup   Create a PostgreSQL backup only.
-  --deploy   Perform a production deployment.
+Examples:
+  ./deploy.sh --check
+  ./deploy.sh --backup
+  ./deploy.sh --deploy
+  ./deploy.sh --rollback v0.4.0-infra-stable
 USAGE
   exit 1
 }
@@ -54,6 +58,11 @@ case "${1:-}" in
   --deploy)
     MODE="deploy"
     ;;
+  --rollback)
+    MODE="rollback"
+    ROLLBACK_TAG="${2:-}"
+    [[ -n "$ROLLBACK_TAG" ]] || usage
+    ;;
   *)
     usage
     ;;
@@ -66,6 +75,21 @@ if [[ -d .git ]]; then
   if ! git diff --quiet || ! git diff --cached --quiet; then
     fail "Git working tree is not clean. Commit changes before deployment."
   fi
+fi
+
+if [[ "$MODE" == "rollback" ]]; then
+  git rev-parse --verify "refs/tags/${ROLLBACK_TAG}^{commit}" >/dev/null 2>&1 \
+    || fail "Git tag not found: ${ROLLBACK_TAG}"
+
+  CURRENT_COMMIT="$(git rev-parse HEAD)"
+  TARGET_COMMIT="$(git rev-list -n 1 "${ROLLBACK_TAG}")"
+
+  log "Rollback target"
+  printf 'Current: %s\n' "$CURRENT_COMMIT"
+  printf 'Target: %s (%s)\n' "$TARGET_COMMIT" "$ROLLBACK_TAG"
+
+  [[ "$CURRENT_COMMIT" != "$TARGET_COMMIT" ]] \
+    || fail "Target tag is already the current commit."
 fi
 
 mkdir -p "$BACKUP_DIR"
@@ -84,7 +108,9 @@ if [[ "$MODE" == "check" ]]; then
   docker compose ps
 
   log "Checking local frontend"
-  curl -fsS --max-time 5 http://127.0.0.1:3100 >/dev/null \
+  curl -fsS --max-time 5 \
+    http://127.0.0.1:3100 \
+    >/dev/null \
     || fail "Local frontend is not responding"
 
   log "Checking backend health"
@@ -132,6 +158,31 @@ if [[ "$MODE" == "backup" ]]; then
   exit 0
 fi
 
+BUILD_DIR=""
+
+if [[ "$MODE" == "rollback" ]]; then
+  BUILD_DIR="$(mktemp -d)"
+
+  cleanup_build_dir() {
+    [[ -n "$BUILD_DIR" ]] && rm -rf "$BUILD_DIR"
+  }
+
+  trap cleanup_build_dir EXIT
+
+  log "Checking out rollback tag into temporary worktree"
+
+  git worktree add --detach "$BUILD_DIR" "$ROLLBACK_TAG" >/dev/null
+
+  cp .env "$BUILD_DIR/.env"
+
+  cd "$BUILD_DIR"
+else
+  log "Using current Git working tree"
+fi
+
+log "Validating selected source"
+docker compose config >/dev/null
+
 log "Building backend and frontend"
 docker compose build backend frontend
 
@@ -139,6 +190,7 @@ log "Starting PostgreSQL"
 docker compose up -d postgres
 
 log "Waiting for PostgreSQL"
+
 for _ in $(seq 1 30); do
   if docker compose exec -T postgres \
       pg_isready \
@@ -148,6 +200,7 @@ for _ in $(seq 1 30); do
   then
     break
   fi
+
   sleep 1
 done
 
@@ -162,6 +215,7 @@ log "Starting backend"
 docker compose up -d backend
 
 log "Waiting for backend"
+
 BACKEND_OK=0
 
 for _ in $(seq 1 30); do
@@ -172,6 +226,7 @@ for _ in $(seq 1 30); do
     BACKEND_OK=1
     break
   fi
+
   sleep 1
 done
 
@@ -187,6 +242,7 @@ log "Starting frontend"
 docker compose up -d frontend
 
 log "Waiting for frontend"
+
 FRONTEND_OK=0
 
 for _ in $(seq 1 30); do
@@ -198,6 +254,7 @@ for _ in $(seq 1 30); do
     FRONTEND_OK=1
     break
   fi
+
   sleep 1
 done
 
@@ -207,6 +264,7 @@ done
 }
 
 log "Smoke test: public panel"
+
 PUBLIC_CODE="$(
   curl -sS \
     --max-time 10 \
@@ -223,6 +281,12 @@ docker compose ps
 
 DEPLOY_SUCCESS=1
 
-printf '\nDeployment completed successfully.\n'
+printf '\nOperation completed successfully.\n'
+printf 'Mode: %s\n' "$MODE"
 printf 'Backup: %s\n' "$BACKUP_FILE"
+
+if [[ "$MODE" == "rollback" ]]; then
+  printf 'Rollback target: %s\n' "$ROLLBACK_TAG"
+fi
+
 printf 'Panel: https://panel.hinaa.ir\n'
