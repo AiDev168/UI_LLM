@@ -95,8 +95,7 @@ check_current() {
   wait_http "$HEALTH_URL" "Local frontend"
 
   log "Checking backend health"
-  $COMPOSE exec -T backend curl -fsS \
-    http://127.0.0.1:8000/health >/dev/null
+  docker exec hinaa-portal-backend     python -c     'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=5)'     >/dev/null
   log "Backend health OK"
 
   log "Checking Alembic"
@@ -193,8 +192,19 @@ deploy() {
   $COMPOSE up -d backend
 
   log "Waiting for backend"
-  $COMPOSE exec -T backend curl -fsS \
-    http://127.0.0.1:8000/health >/dev/null
+  for i in $(seq 1 30); do
+    if docker exec hinaa-portal-backend       python -c       'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3)'       >/dev/null 2>&1
+    then
+      log "Backend health OK"
+      break
+    fi
+
+    if [ "$i" -eq 30 ]; then
+      die "Backend health check failed."
+    fi
+
+    sleep 2
+  done
 
   log "Checking Alembic"
   $COMPOSE exec -T backend alembic current
