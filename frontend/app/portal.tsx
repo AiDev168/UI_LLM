@@ -96,6 +96,12 @@ export default function Portal() {
   const [keyModal, setKeyModal] = useState(false);
   const [newKey, setNewKey] = useState<any>(null);
   const [formError, setFormError] = useState("");
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  const notify = (message: string, type: "success" | "error" = "success") => {
+    setToast({ message, type });
+    window.setTimeout(() => setToast(null), 2800);
+  };
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const abortRef = useRef<AbortController | null>(null);
 
@@ -174,26 +180,307 @@ export default function Portal() {
   const editMessage = (index: number) => { const msg = messages[index]; if (msg?.role === "user" && !sending) { setInput(msg.content); setEditingIndex(index); } };
 
   const deleteConversation = async (id: string) => { if (!historyAvailable || !confirm("این گفتگو حذف شود؟")) return; try { await api(`/conversations/${id}`, { method: "DELETE" }); if (conversationId === id) newConversation(); setConversations((items) => items.filter((x) => x.id !== id)); } catch (err: any) { setFormError(err.message); } };
-  const createKey = async (e: FormEvent<HTMLFormElement>) => { e.preventDefault(); setFormError(""); const fd = new FormData(e.currentTarget); try { const data = await api("/api-keys", { method: "POST", body: JSON.stringify({ alias: fd.get("alias"), models: [selectedModel], rpm_limit: Number(fd.get("rpm") || 30), duration: fd.get("duration") || "30d" }) }); setNewKey(data); setKeyModal(false); await load(); } catch (err: any) { setFormError(err.message); } };
+  const createKey = async (e: FormEvent<HTMLFormElement>) => { e.preventDefault(); setFormError(""); const fd = new FormData(e.currentTarget); try { const data = await api("/api-keys", { method: "POST", body: JSON.stringify({ alias: fd.get("alias"), models: [selectedModel], rpm_limit: Number(fd.get("rpm") || 30), duration: fd.get("duration") || "30d" }) }); setNewKey(data); setKeyModal(false); notify("کلید API با موفقیت ایجاد شد"); await load(); } catch (err: any) { setFormError(err.message); } };
   const deleteKey = async (id: string) => { if (!confirm("این کلید لغو شود؟")) return; try { await api(`/api-keys/${id}`, { method: "DELETE" }); await load(); } catch (err: any) { setFormError(err.message); } };
-  const rotateKey = async (id: string) => { if (!confirm("کلید فعلی با یک کلید جدید جایگزین شود؟")) return; try { const data = await api(`/api-keys/${id}/rotate`, { method: "POST" }); setNewKey(data); await load(); } catch (err: any) { setFormError(err.message); } };
+  const rotateKey = async (id: string) => { if (!confirm("کلید فعلی با یک کلید جدید جایگزین شود؟")) return; try { const data = await api(`/api-keys/${id}/rotate`, { method: "POST" }); setNewKey(data); notify("کلید API با موفقیت چرخانده شد"); await load(); } catch (err: any) { setFormError(err.message); } };
 
   const sidebar = useMemo(() => [["dashboard", "داشبورد", "home"], ["chat", "چت", "chat"], ["keys", "کلیدهای API", "key"], ["usage", "مصرف و Usage", "chart"], ["account", "حساب کاربری", "user"]], []);
   const pageTitle = active === "dashboard" ? "داشبورد" : active === "chat" ? "گفتگو" : active === "keys" ? "کلیدهای API" : active === "usage" ? "مصرف و Usage" : "حساب کاربری";
-  if (loading) return <div className="boot"><div className="brand-mark">H</div><div>در حال راه‌اندازی پنل…</div></div>;
+  if (loading) return <div className="boot"><div className="brand-mark">T</div><div>در حال راه‌اندازی پنل…</div></div>;
   if (!user) return <Auth mode={authMode} setMode={setAuthMode} submit={submitAuth} error={formError} />;
 
   return <main className="app-shell">
-    <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">H</div><div><b>Hinaa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={() => setActive(id)}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
+    {toast && (
+      <div className={`toast ${toast.type}`}>
+        <span>{toast.message}</span>
+        <button aria-label="بستن" onClick={() => setToast(null)}>×</button>
+      </div>
+    )}
+    <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={() => setActive(id)}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
     <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><button className="icon-btn" aria-label="تغییر تم" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"}/></button><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} />}</section>
     {keyModal && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کلید API</h3><button onClick={() => setKeyModal(false)}>×</button></div><form className="form-stack" onSubmit={createKey}><label>نام کلید<input name="alias" required placeholder="Production App" /></label><label>مدل<input value={selectedModel} readOnly /></label><label>محدودیت RPM<input name="rpm" type="number" defaultValue={30} min={1} /></label><label>انقضا<select name="duration" defaultValue="30d"><option value="30d">۳۰ روز</option><option value="90d">۹۰ روز</option><option value="365d">۱ سال</option><option value="">بدون انقضا</option></select></label>{formError && <div className="error-box">{formError}</div>}<button className="primary" type="submit">ایجاد کلید</button></form></div></div>}
   </main>;
 }
 
-function Auth({ mode, setMode, submit, error }: any) { return <main className="auth-shell"><section className="auth-card"><div className="brand-lockup"><div className="brand-mark large">H</div><div><b>Hinaa</b><span>هوش مصنوعی حرفه‌ای</span></div></div><h1>{mode === "login" ? "خوش آمدید" : "ساخت حساب کاربری"}</h1><p className="muted">دسترسی به چت و سرویس‌های هوش مصنوعی Hinaa</p><form onSubmit={submit} className="form-stack">{mode === "register" && <label>نام<input name="name" required placeholder="نام شما" /></label>}<label>ایمیل<input name="email" type="email" required placeholder="you@example.com" /></label><label>رمز عبور<input name="password" type="password" minLength={8} required placeholder="حداقل ۸ کاراکتر" /></label>{error && <div className="error-box">{error}</div>}<button className="primary full" type="submit">{mode === "login" ? "ورود" : "ثبت‌نام"}</button></form><button className="link-btn" onClick={() => setMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "حساب ندارید؟ ثبت‌نام کنید" : "حساب دارید؟ وارد شوید"}</button></section></main>; }
-function Dashboard({ user, data, keys, onChat, onKeys }: any) { return <div className="content"><div className="hero"><div><div className="eyebrow">HINAA AI</div><h1>سلام {user.name} 👋</h1><p>همه‌چیز برای شروع یک تجربه حرفه‌ای با هوش مصنوعی آماده است.</p></div><button className="primary" onClick={onChat}><Icon name="chat"/>شروع گفتگو</button></div><div className="stat-grid"><Stat title="مدل فعال" value={data?.models?.[0] || "Qwen3-32B"}/><Stat title="کلیدهای فعال" value={data?.keys ?? keys.length}/><Stat title="هزینه ثبت‌شده" value={`$${Number(data?.spend || 0).toFixed(4)}`}/></div><div className="section-head"><h3>دسترسی سریع</h3></div><div className="quick-grid"><button onClick={onChat}><Icon name="chat"/><b>چت با هوش مصنوعی</b><span>گفتگوی سریع و مستقیم</span></button><button onClick={onKeys}><Icon name="key"/><b>مدیریت API Key</b><span>ساخت و مدیریت کلید سرویس</span></button></div></div>; }
+function Auth({ mode, setMode, submit, error }: any) { return <main className="auth-shell"><section className="auth-card"><div className="brand-lockup"><div className="brand-mark large">T</div><div><b>TaHa</b><span>هوش مصنوعی حرفه‌ای</span></div></div><h1>{mode === "login" ? "خوش آمدید" : "ساخت حساب کاربری"}</h1><p className="muted">دسترسی به چت و سرویس‌های هوش مصنوعی TaHa</p><form onSubmit={submit} className="form-stack">{mode === "register" && <label>نام<input name="name" required placeholder="نام شما" /></label>}<label>ایمیل<input name="email" type="email" required placeholder="you@example.com" /></label><label>رمز عبور<input name="password" type="password" minLength={8} required placeholder="حداقل ۸ کاراکتر" /></label>{error && <div className="error-box">{error}</div>}<button className="primary full" type="submit">{mode === "login" ? "ورود" : "ثبت‌نام"}</button></form><button className="link-btn" onClick={() => setMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "حساب ندارید؟ ثبت‌نام کنید" : "حساب دارید؟ وارد شوید"}</button></section></main>; }
+function Dashboard({ user, data, keys, onChat, onKeys }: any) {
+  const activeKeys = keys.filter((k: Key) => k.status === "active").length;
+  const totalSpend = Number(data?.spend || 0);
+  const models = Array.isArray(data?.models) && data.models.length
+    ? data.models
+    : ["Qwen3-32B"];
+
+  return (
+    <div className="content dashboard-page">
+      <div className="hero dashboard-hero">
+        <div>
+          <div className="eyebrow">TAHA AI</div>
+          <h1>سلام {user.name} 👋</h1>
+          <p>مرکز مدیریت سرویس‌های هوش مصنوعی و API شما.</p>
+        </div>
+
+        <button className="primary dashboard-main-action" onClick={onChat}>
+          <Icon name="chat" />
+          شروع گفتگو
+        </button>
+      </div>
+
+      <div className="dashboard-stats">
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chat" /></div>
+          <div>
+            <span>مدل فعال</span>
+            <strong>{models[0]}</strong>
+            <small>{models.length} مدل در دسترس</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="key" /></div>
+          <div>
+            <span>کلیدهای فعال</span>
+            <strong>{activeKeys}</strong>
+            <small>{keys.length} کلید ثبت‌شده</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chart" /></div>
+          <div>
+            <span>هزینه ثبت‌شده</span>
+            <strong>${totalSpend.toFixed(4)}</strong>
+            <small>مصرف فعلی سرویس</small>
+          </div>
+        </div>
+      </div>
+
+      <div className="dashboard-grid">
+        <section className="dashboard-card dashboard-overview">
+          <div className="dashboard-card-head">
+            <div>
+              <span className="eyebrow">OVERVIEW</span>
+              <h3>وضعیت سرویس</h3>
+            </div>
+            <span className="service-badge">
+              <i />
+              فعال
+            </span>
+          </div>
+
+          <div className="service-row">
+            <div>
+              <b>Qwen3-32B</b>
+              <span>مدل پیش‌فرض پلتفرم TaHa</span>
+            </div>
+            <strong>Ready</strong>
+          </div>
+
+          <div className="service-row">
+            <div>
+              <b>API Gateway</b>
+              <span>اتصال امن به LiteLLM</span>
+            </div>
+            <strong>Online</strong>
+          </div>
+
+          <div className="service-row">
+            <div>
+              <b>حساب کاربری</b>
+              <span>{user.email}</span>
+            </div>
+            <strong>Active</strong>
+          </div>
+        </section>
+
+        <section className="dashboard-card">
+          <div className="dashboard-card-head">
+            <div>
+              <span className="eyebrow">QUICK ACTIONS</span>
+              <h3>دسترسی سریع</h3>
+            </div>
+          </div>
+
+          <div className="dashboard-actions">
+            <button onClick={onChat}>
+              <Icon name="chat" />
+              <div>
+                <b>گفتگوی جدید</b>
+                <span>شروع یک مکالمه با مدل</span>
+              </div>
+            </button>
+
+            <button onClick={onKeys}>
+              <Icon name="key" />
+              <div>
+                <b>مدیریت API Key</b>
+                <span>ایجاد، چرخش و لغو کلیدها</span>
+              </div>
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function Stat({ title, value }: { title: string; value: string | number }) { return <div className="stat"><small>{title}</small><strong>{value}</strong><span>وضعیت فعلی</span></div>; }
-function Chat({ selectedModel, setSelectedModel, models, messages, input, setInput, sendChat, sending, onNew, onStop, editingIndex, cancelEdit, onEdit, onRegenerate, historyAvailable }: any) { const end = useRef<HTMLDivElement>(null); useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]); return <div className="chat-view"><div className="chat-head"><div><h3>{messages.length ? "گفتگو" : "گفتگوی جدید"}</h3><span>{historyAvailable ? "گفتگو و تاریخچه شما در پنل ذخیره می‌شود." : "پاسخ‌ها توسط مدل انتخاب‌شده تولید می‌شوند."}</span></div><div className="chat-tools"><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select><button className="secondary" onClick={onNew}>گفتگوی جدید</button></div></div>{editingIndex !== null && <div className="edit-banner">در حال ویرایش پیام <button onClick={cancelEdit}>لغو</button></div>}<div className="messages">{messages.length === 0 ? <div className="empty-chat"><div className="brand-mark large">H</div><h2>چطور می‌توانم کمک کنم؟</h2><p>سؤال خود را بنویسید یا یکی از نمونه‌ها را انتخاب کنید.</p><div className="suggestions"><button onClick={() => setInput("یک متن حرفه‌ای برای معرفی محصول بنویس")}>معرفی محصول</button><button onClick={() => setInput("این کد را بررسی و بهینه کن")}>بررسی کد</button><button onClick={() => setInput("یک برنامه کاری هفتگی پیشنهاد بده")}>برنامه‌ریزی</button></div></div> : messages.map((m: Msg, i: number) => <div key={m.id || i} className={`message ${m.role}`}><div className="bubble-wrap"><div className="bubble">{m.role === "assistant" ? <Markdown text={m.content || (sending && i === messages.length - 1 ? "در حال تولید پاسخ…" : "")}/> : <div className="user-text">{m.content}</div>}</div><div className="message-actions">{m.role === "user" && <button onClick={() => onEdit(i)} disabled={sending}><Icon name="edit"/>ویرایش</button>}{m.role === "assistant" && <button onClick={() => onRegenerate(i)} disabled={sending}><Icon name="refresh"/>پاسخ دوباره</button>}{m.content && <button onClick={() => navigator.clipboard?.writeText(m.content)}><Icon name="copy"/>کپی</button>}</div></div></div>)}<div ref={end}/></div><div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } }} placeholder="پیام خود را بنویسید…"/><div className="composer-actions">{sending ? <button className="stop-btn" onClick={onStop}><Icon name="stop"/>توقف</button> : <button className="send-btn-inline" onClick={sendChat} disabled={!input.trim() || !selectedModel}><Icon name="send"/></button>}</div><div className="composer-hint">Enter برای ارسال · Shift+Enter برای خط جدید{historyAvailable ? " · ذخیره خودکار تاریخچه" : ""}</div></div></div>; }
-function Keys({ keys, models, selectedModel, setSelectedModel, deleteKey, rotateKey, openModal, newKey, setNewKey }: any) { return <div className="content"><div className="page-intro"><div><div className="eyebrow">API CENTER</div><h1>کلیدهای API</h1><p>کلیدهای دسترسی خود را مدیریت کنید و هر کلید را به مدل‌های مجاز محدود کنید.</p></div><button className="primary" onClick={openModal}><Icon name="plus"/>ساخت کلید جدید</button></div><div className="toolbar"><label>مدل پیش‌فرض برای کلید جدید<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select></label></div>{newKey && <div className="reveal"><div><b>کلید جدید ایجاد شد</b><p>این مقدار را همین حالا کپی و در محل امن نگهداری کنید.</p><code>{newKey.key}</code></div><button onClick={() => navigator.clipboard?.writeText(newKey.key)}><Icon name="copy"/>کپی</button><button onClick={() => setNewKey(null)}>×</button></div>}<div className="key-grid">{keys.map((k: Key) => <div className="key-card" key={k.id}><div className="key-top"><div className="key-icon"><Icon name="key"/></div><div><b>{k.alias}</b><small>{k.masked}</small></div><span className={`pill ${k.status}`}>{k.status === "active" ? "فعال" : "لغو شده"}</span></div><div className="key-meta"><div><small>مدل</small><strong>{k.models.join("، ")}</strong></div><div><small>RPM</small><strong>{k.rpm_limit ?? "—"}</strong></div><div><small>مصرف</small><strong>${Number(k.spend || 0).toFixed(4)}</strong></div></div><div className="key-actions"><button onClick={() => rotateKey(k.id)} disabled={k.status !== "active"}><Icon name="refresh"/>چرخش</button><button className="danger" onClick={() => deleteKey(k.id)} disabled={k.status !== "active"}><Icon name="trash"/>لغو کلید</button></div></div>)}</div>{keys.length === 0 && <div className="empty-card"><h3>هنوز کلیدی ندارید</h3><p>اولین کلید API خود را بسازید.</p><button className="primary" onClick={openModal}>ساخت اولین کلید</button></div>}</div>; }
-function Usage({ keys, data }: any) { return <div className="content"><div className="page-intro"><div><div className="eyebrow">USAGE</div><h1>مصرف و Usage</h1><p>نمای کلی مصرف سرویس‌های فعال شما.</p></div></div><div className="stat-grid"><Stat title="کلیدهای فعال" value={keys.filter((k: Key) => k.status === "active").length}/><Stat title="هزینه ثبت‌شده" value={`$${Number(data?.total_spend ?? data?.spend ?? 0).toFixed(4)}`}/><Stat title="پیام‌ها" value={data?.messages ?? "—"}/></div><div className="info-card"><h3>گزارش مصرف هر کلید</h3>{(data?.keys || keys).map((k: any) => <div className="usage-row" key={k.id}><span>{k.alias}</span><div className="bar"><i style={{ width: `${Math.min(100, Number(k.spend || 0) * 1000)}%` }}/></div><b>${Number(k.spend || 0).toFixed(4)}</b></div>)}</div></div>; }
-function Account({ user, theme, setTheme }: any) { return <div className="content"><div className="page-intro"><div><div className="eyebrow">ACCOUNT</div><h1>حساب کاربری</h1><p>اطلاعات حساب و ترجیحات پنل.</p></div></div><div className="profile-card"><div className="avatar huge">{user.name.slice(0, 1)}</div><div><h3>{user.name}</h3><p>{user.email}</p><span className="pill active">کاربر</span></div></div><div className="info-card"><div className="setting-row"><div><h3>ظاهر پنل</h3><p>انتخاب حالت روشن یا تیره برای پنل کاربری.</p></div><button className="secondary" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"}/>{theme === "dark" ? "حالت روشن" : "حالت تیره"}</button></div><div className="account-note"><b>امنیت</b><span>نشست و رمز عبور توسط سرویس احراز هویت Hinaa مدیریت می‌شود.</span></div></div></div>; }
+function Chat({ selectedModel, setSelectedModel, models, messages, input, setInput, sendChat, sending, onNew, onStop, editingIndex, cancelEdit, onEdit, onRegenerate, historyAvailable }: any) { const end = useRef<HTMLDivElement>(null); useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]); return <div className="chat-view"><div className="chat-head"><div><h3>{messages.length ? "گفتگو" : "گفتگوی جدید"}</h3><span>{historyAvailable ? "گفتگو و تاریخچه شما در پنل ذخیره می‌شود." : "پاسخ‌ها توسط مدل انتخاب‌شده تولید می‌شوند."}</span></div><div className="chat-tools"><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select><button className="secondary" onClick={onNew}>گفتگوی جدید</button></div></div>{editingIndex !== null && <div className="edit-banner">در حال ویرایش پیام <button onClick={cancelEdit}>لغو</button></div>}<div className="messages">{messages.length === 0 ? <div className="empty-chat"><div className="brand-mark large">T</div><h2>چطور می‌توانم کمک کنم؟</h2><p>سؤال خود را بنویسید یا یکی از نمونه‌ها را انتخاب کنید.</p><div className="suggestions"><button onClick={() => setInput("یک متن حرفه‌ای برای معرفی محصول بنویس")}>معرفی محصول</button><button onClick={() => setInput("این کد را بررسی و بهینه کن")}>بررسی کد</button><button onClick={() => setInput("یک برنامه کاری هفتگی پیشنهاد بده")}>برنامه‌ریزی</button></div></div> : messages.map((m: Msg, i: number) => <div key={m.id || i} className={`message ${m.role}`}><div className="bubble-wrap"><div className="bubble">{m.role === "assistant" ? <Markdown text={m.content || (sending && i === messages.length - 1 ? "در حال تولید پاسخ…" : "")}/> : <div className="user-text">{m.content}</div>}</div><div className="message-actions">{m.role === "user" && <button onClick={() => onEdit(i)} disabled={sending}><Icon name="edit"/>ویرایش</button>}{m.role === "assistant" && <button onClick={() => onRegenerate(i)} disabled={sending}><Icon name="refresh"/>پاسخ دوباره</button>}{m.content && <button onClick={() => navigator.clipboard?.writeText(m.content)}><Icon name="copy"/>کپی</button>}</div></div></div>)}<div ref={end}/></div><div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } }} placeholder="پیام خود را بنویسید…"/><div className="composer-actions">{sending ? <button className="stop-btn" onClick={onStop}><Icon name="stop"/>توقف</button> : <button className="send-btn-inline" onClick={sendChat} disabled={!input.trim() || !selectedModel}><Icon name="send"/></button>}</div><div className="composer-hint">Enter برای ارسال · Shift+Enter برای خط جدید{historyAvailable ? " · ذخیره خودکار تاریخچه" : ""}</div></div></div>; }
+function Keys({ keys, models, selectedModel, setSelectedModel, deleteKey, rotateKey, openModal, newKey, setNewKey }: any) { return <div className="content"><div className="page-intro"><div><div className="eyebrow">API CENTER</div><h1>کلیدهای API</h1><p>کلیدهای دسترسی خود را مدیریت کنید و هر کلید را به مدل‌های مجاز محدود کنید.</p></div><button className="primary" onClick={openModal}><Icon name="plus"/>ساخت کلید جدید</button></div><div className="toolbar"><label>مدل پیش‌فرض برای کلید جدید<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select></label></div>{newKey && <div className="reveal"><div><b>کلید جدید ایجاد شد</b><p>این مقدار را همین حالا کپی و در محل امن نگهداری کنید.</p><code>{newKey.key}</code></div><button onClick={() => navigator.clipboard?.writeText(newKey.key).then(() => notify("کلید API کپی شد"))}><Icon name="copy"/>کپی</button><button onClick={() => setNewKey(null)}>×</button></div>}<div className="key-grid">{keys.map((k: Key) => <div className="key-card" key={k.id}><div className="key-top"><div className="key-icon"><Icon name="key"/></div><div><b>{k.alias}</b><small>{k.masked}</small></div><span className={`pill ${k.status}`}>{k.status === "active" ? "فعال" : "لغو شده"}</span></div><div className="key-meta"><div><small>مدل</small><strong>{k.models.join("، ")}</strong></div><div><small>RPM</small><strong>{k.rpm_limit ?? "—"}</strong></div><div><small>مصرف</small><strong>${Number(k.spend || 0).toFixed(4)}</strong></div></div><div className="key-actions"><button onClick={() => rotateKey(k.id)} disabled={k.status !== "active"}><Icon name="refresh"/>چرخش</button><button className="danger" onClick={() => deleteKey(k.id)} disabled={k.status !== "active"}><Icon name="trash"/>لغو کلید</button></div></div>)}</div>{keys.length === 0 && <div className="empty-card"><h3>هنوز کلیدی ندارید</h3><p>اولین کلید API خود را بسازید.</p><button className="primary" onClick={openModal}>ساخت اولین کلید</button></div>}</div>; }
+function Usage({ keys, data }: any) {
+  const rows = Array.isArray(data?.keys) ? data.keys : keys;
+  const activeKeys = keys.filter((k: Key) => k.status === "active").length;
+  const totalSpend = Number(data?.total_spend ?? data?.spend ?? 0);
+  const messageCount = Number(data?.messages ?? 0);
+
+  const maxSpend = Math.max(
+    ...rows.map((k: any) => Number(k.spend || 0)),
+    0.000001
+  );
+
+  return (
+    <div className="content usage-page">
+      <div className="page-intro usage-intro">
+        <div>
+          <div className="eyebrow">USAGE CENTER</div>
+          <h1>مصرف و Usage</h1>
+          <p>نمای دقیق وضعیت مصرف سرویس‌های TaHa بر اساس داده‌های واقعی حساب شما.</p>
+        </div>
+      </div>
+
+      <div className="dashboard-stats">
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="key" /></div>
+          <div>
+            <span>کلیدهای فعال</span>
+            <strong>{activeKeys}</strong>
+            <small>از {keys.length} کلید ثبت‌شده</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chart" /></div>
+          <div>
+            <span>هزینه ثبت‌شده</span>
+            <strong>${totalSpend.toFixed(4)}</strong>
+            <small>مجموع مصرف گزارش‌شده</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chat" /></div>
+          <div>
+            <span>پیام‌ها</span>
+            <strong>{messageCount}</strong>
+            <small>پیام ذخیره‌شده در Portal</small>
+          </div>
+        </div>
+      </div>
+
+      <section className="dashboard-card usage-card">
+        <div className="dashboard-card-head">
+          <div>
+            <span className="eyebrow">API KEYS</span>
+            <h3>مصرف به تفکیک کلید</h3>
+          </div>
+          <span className="usage-total">${totalSpend.toFixed(4)}</span>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="usage-empty">
+            <div className="dashboard-stat-icon"><Icon name="chart" /></div>
+            <h3>هنوز داده‌ای برای مصرف وجود ندارد</h3>
+            <p>پس از استفاده از API، مصرف هر کلید در این بخش نمایش داده می‌شود.</p>
+          </div>
+        ) : (
+          <div className="usage-list">
+            {rows.map((k: any) => {
+              const spend = Number(k.spend || 0);
+              const width = Math.max(2, (spend / maxSpend) * 100);
+
+              return (
+                <div className="usage-item" key={k.id}>
+                  <div className="usage-item-top">
+                    <div>
+                      <b>{k.alias}</b>
+                      <span className={`usage-status ${k.status}`}>
+                        {k.status === "active" ? "فعال" : "لغو شده"}
+                      </span>
+                    </div>
+                    <strong>${spend.toFixed(4)}</strong>
+                  </div>
+
+                  <div className="usage-track">
+                    <i style={{ width: `${width}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Account({ user, theme, setTheme }: any) {
+  return (
+    <div className="content account-page">
+      <div className="page-intro">
+        <div>
+          <div className="eyebrow">ACCOUNT</div>
+          <h1>حساب کاربری</h1>
+          <p>اطلاعات حساب و ترجیحات پنل TaHa را مدیریت کنید.</p>
+        </div>
+      </div>
+
+      <div className="account-grid">
+        <section className="profile-card account-profile">
+          <div className="avatar huge">T</div>
+          <div>
+            <span className="eyebrow">PROFILE</span>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+            <span className="pill active">کاربر فعال</span>
+          </div>
+        </section>
+
+        <section className="info-card">
+          <div className="setting-row">
+            <div>
+              <span className="eyebrow">APPEARANCE</span>
+              <h3>ظاهر پنل</h3>
+              <p>حالت نمایش موردنظر خود را انتخاب کنید.</p>
+            </div>
+            <button
+              className="secondary"
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              <Icon name={theme === "dark" ? "sun" : "moon"} />
+              {theme === "dark" ? "حالت روشن" : "حالت تیره"}
+            </button>
+          </div>
+        </section>
+
+        <section className="info-card account-security-card">
+          <div className="eyebrow">SECURITY</div>
+          <h3>امنیت حساب</h3>
+          <div className="security-item">
+            <div>
+              <b>نشست فعلی</b>
+              <span>احراز هویت با نشست امن مرورگر انجام می‌شود.</span>
+            </div>
+            <span className="service-badge"><i /> فعال</span>
+          </div>
+          <div className="security-item">
+            <div>
+              <b>API Master Key</b>
+              <span>اطلاعات مدیریتی LiteLLM هرگز در مرورگر قرار نمی‌گیرد.</span>
+            </div>
+            <span className="service-badge"><i /> محافظت‌شده</span>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
