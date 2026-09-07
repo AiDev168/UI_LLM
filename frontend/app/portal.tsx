@@ -1,0 +1,794 @@
+"use client";
+
+import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: "pending" | "active" | "disabled" | "rejected";
+  chat_enabled: boolean;
+  api_enabled: boolean;
+  mlops_enabled: boolean;
+  must_change_password: boolean;
+};
+type Model = { id: string };
+type Key = { id: string; alias: string; masked: string; models: string[]; rpm_limit: number | null; spend: number; max_budget?: number | null; remaining_budget?: number | null; budget_duration?: string | null; budget_reset_at?: string | null; status: string; expires_at?: string | null };
+type Msg = { role: "user" | "assistant"; content: string; id?: string };
+type Conversation = { id: string; title: string; model: string; updated_at: string };
+
+async function api(path: string, init: RequestInit = {}) {
+  const res = await fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...(init.headers || {}) } });
+  const text = await res.text();
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { detail: text }; }
+  if (!res.ok) throw new Error(data?.detail || data?.error?.message || `HTTP ${res.status}`);
+  return data;
+}
+
+function Icon({ name }: { name: string }) {
+  const common = { width: 19, height: 19, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  const paths: Record<string, ReactNode> = {
+    home: <><path d="m3 10 9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></>,
+    chat: <><path d="M21 11.5a8 8 0 0 1-8.6 8A8.4 8.4 0 0 1 7 18.6L3 20l1.4-3.5A7.9 7.9 0 0 1 3 12a8 8 0 0 1 18-0.5Z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/></>,
+    key: <><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 8.5-8.5M15 8l2 2M18 5l1 1"/></>,
+    chart: <><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 4-6"/></>,
+    user: <><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></>,
+    logout: <><path d="M10 5H5v14h5"/><path d="m14 8 4 4-4 4M18 12H9"/></>,
+    plus: <><path d="M12 5v14M5 12h14"/></>,
+    send: <><path d="m4 4 16 8-16 8 4.5-8L4 4Z"/><path d="M8.5 12H20"/></>,
+    copy: <><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></>,
+    trash: <><path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13M9 7V4h6v3"/></>,
+    refresh: <><path d="M20 11a8 8 0 0 0-14.8-3L3 10"/><path d="M3 5v5h5"/><path d="M4 13a8 8 0 0 0 14.8 3L21 14"/><path d="M21 19v-5h-5"/></>,
+    stop: <><rect x="7" y="7" width="10" height="10" rx="2"/></>,
+    edit: <><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></>,
+    sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></>,
+    moon: <path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5 8.5 8.5 0 1 0 20.5 14.5Z"/>,
+  };
+  return <svg {...common}>{paths[name]}</svg>;
+}
+
+function InlineMarkdown({ text }: { text: string }) {
+  const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^\)]+\))/g).filter(Boolean);
+  return <>{tokens.map((token, i) => {
+    if (token.startsWith("`") && token.endsWith("`")) return <code key={i}>{token.slice(1, -1)}</code>;
+    if (token.startsWith("**") && token.endsWith("**")) return <strong key={i}>{token.slice(2, -2)}</strong>;
+    if (token.startsWith("*") && token.endsWith("*")) return <em key={i}>{token.slice(1, -1)}</em>;
+    const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (link) return <a key={i} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
+    return <span key={i}>{token}</span>;
+  })}</>;
+}
+
+function Markdown({ text }: { text: string }) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let codeMode = false;
+  let lang = "";
+  let code: string[] = [];
+  let list: string[] = [];
+  const flushList = () => { if (!list.length) return; blocks.push(<ul key={`ul-${blocks.length}`}>{list.map((x, i) => <li key={i}><InlineMarkdown text={x}/></li>)}</ul>); list = []; };
+  const flushCode = () => { if (!codeMode) return; blocks.push(<pre key={`pre-${blocks.length}`}><code data-lang={lang}>{code.join("\n")}</code></pre>); code = []; lang = ""; codeMode = false; };
+  lines.forEach((line, index) => {
+    const fence = line.match(/^```\s*([\w+-]*)\s*$/);
+    if (fence) { if (codeMode) flushCode(); else { flushList(); codeMode = true; lang = fence[1] || "text"; } return; }
+    if (codeMode) { code.push(line); return; }
+    const item = line.match(/^\s*[-*]\s+(.+)$/);
+    if (item) { list.push(item[1]); return; }
+    flushList();
+    if (!line.trim()) return;
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) { const level = heading[1].length; const Tag = (`h${level}`) as any; blocks.push(<Tag key={`h-${index}`}><InlineMarkdown text={heading[2]}/></Tag>); return; }
+    blocks.push(<p key={`p-${index}`}><InlineMarkdown text={line}/></p>);
+  });
+  flushList(); flushCode();
+  return <div className="markdown">{blocks}</div>;
+}
+
+export default function Portal() {
+  const [user, setUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [loading, setLoading] = useState(true);
+  const [active, setActive] = useState("dashboard");
+  const forcePageReset = () => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector(".main-panel") as HTMLElement | null;
+      if (el) el.scrollTo({ top: 0, behavior: "auto" });
+      window.scrollTo({ top: 0, behavior: "auto" });
+    });
+  };
+
+  const [models, setModels] = useState<Model[]>([]);
+  const [keys, setKeys] = useState<Key[]>([]);
+  const [dashboard, setDashboard] = useState<any>(null);
+  const [usage, setUsage] = useState<any>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [historyAvailable, setHistoryAvailable] = useState(true);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [input, setInput] = useState("");
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [sending, setSending] = useState(false);
+  const [keyModal, setKeyModal] = useState(false);
+  const [newKey, setNewKey] = useState<any>(null);
+  const [formError, setFormError] = useState("");
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [forcePasswordChange, setForcePasswordChange] = useState(false);
+
+  const notify = (message: string, type: "success" | "error" = "success") => {
+    setToast({ message, type });
+    window.setTimeout(() => setToast(null), 2800);
+  };
+  const [theme, setTheme] = useState<"dark" | "light" | "midnight" | "glass" | "paper" | "ocean">("dark");
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => { const saved = window.localStorage.getItem("hinaa-theme") as typeof theme | null; if (saved) setTheme(saved); }, []);
+  useEffect(() => { document.documentElement.dataset.theme = theme; window.localStorage.setItem("hinaa-theme", theme); }, [theme]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const me = await api("/me");
+      setUser(me);
+      setForcePasswordChange(Boolean(me.must_change_password));
+      if (me.must_change_password) {
+        setModels([]); setKeys([]); setDashboard(null); setConversations([]); setHistoryAvailable(false);
+        return;
+      }
+
+      const [m, k, d, c] = await Promise.allSettled([
+        api("/models"),
+        me.role === "admin" || me.api_enabled ? api("/api-keys") : Promise.reject(new Error("API disabled")),
+        api("/dashboard"),
+        me.role === "admin" || me.chat_enabled ? api("/conversations") : Promise.reject(new Error("Chat disabled")),
+      ]);
+
+      const modelsResult = m.status === "fulfilled" ? m.value : null;
+      const keysResult = k.status === "fulfilled" ? k.value : null;
+      const dashboardResult = d.status === "fulfilled" ? d.value : null;
+      const conversationsResult = c.status === "fulfilled" ? c.value : null;
+
+      setModels(modelsResult?.data || []);
+      setKeys(keysResult?.data || []);
+      setDashboard(dashboardResult);
+      setSelectedModel((current) => current || modelsResult?.data?.[0]?.id || "Qwen3-32B");
+      setConversations(conversationsResult?.data || []);
+      setHistoryAvailable(Boolean(conversationsResult));
+    } catch {
+      setUser(null);
+      setForcePasswordChange(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+  useEffect(() => { forcePageReset(); }, [active]);
+  const refreshUsage = async () => {
+    try {
+      const result = await api("/usage");
+      setUsage(result);
+      setFormError("");
+    } catch (err: any) {
+      console.error("Usage request failed:", err);
+      setUsage(null);
+      setFormError(err?.message || "خطا در دریافت Usage");
+    }
+  };
+  useEffect(() => { if (user && active === "usage") refreshUsage(); }, [user, active]);
+  useEffect(() => { const el = document.querySelector(".main-panel"); if (el) el.scrollTop = 0; }, [active]);
+
+  const submitAuth = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setFormError("");
+    const fd = new FormData(e.currentTarget);
+    const body = authMode === "login"
+      ? { email: fd.get("email"), password: fd.get("password") }
+      : { name: fd.get("name"), email: fd.get("email"), password: fd.get("password") };
+    try {
+      const result = await api(`/auth/${authMode}`, { method: "POST", body: JSON.stringify(body) });
+      if (authMode === "register" && result?.pending) {
+        setAuthMode("login");
+        setFormError(result.message || "درخواست ثبت‌نام شما ثبت شد و پس از تأیید مدیر فعال خواهد شد.");
+        return;
+      }
+      await load();
+    } catch (err: any) {
+      setFormError(err.message);
+    }
+  };
+  const logout = async () => { try { await api("/auth/logout", { method: "POST" }); } finally { setUser(null); } };
+  const changePassword = async (currentPassword: string, newPassword: string) => {
+    await api("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    await load();
+    setFormError("");
+    notify("رمز عبور با موفقیت تغییر کرد");
+  };
+
+  const newConversation = () => { abortRef.current?.abort(); setConversationId(null); setMessages([]); setInput(""); setEditingIndex(null); setFormError(""); setActive("chat"); };
+  const openConversation = async (id: string) => { if (!historyAvailable) return; try { const result = await api(`/conversations/${id}`); const raw = result.data.messages || []; setConversationId(id); setMessages(raw.filter((m: any) => m.role !== "system").map((m: any, i: number) => ({ role: m.role, content: m.content, id: m.id || `${id}-${i}` }))); setSelectedModel(result.data.model || selectedModel); setEditingIndex(null); setFormError(""); setActive("chat"); } catch (err: any) { setFormError(err.message); } };
+  const ensureConversation = async () => { if (conversationId || !historyAvailable) return conversationId; try { const result = await api("/conversations", { method: "POST", body: JSON.stringify({ model: selectedModel }) }); const id = result.data.id; setConversationId(id); setConversations((items) => [result.data, ...items]); return id; } catch { setHistoryAvailable(false); return null; } };
+  const persistMessage = async (id: string | null, role: "user" | "assistant", content: string) => { if (!id || !historyAvailable) return; try { await api(`/conversations/${id}/messages`, { method: "POST", body: JSON.stringify({ role, content }) }); } catch { setHistoryAvailable(false); } };
+
+  const streamChat = async (chatMessages: Msg[], id: string | null, persistAssistant = true) => {
+    const controller = new AbortController(); abortRef.current = controller;
+    const res = await fetch("/api/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ model: selectedModel, messages: chatMessages.map(({ role, content }) => ({ role, content })), stream: true, max_tokens: 1200, enable_thinking: false }) });
+    if (!res.ok || !res.body) throw new Error(await res.text());
+    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let assistantText = "";
+    while (true) {
+      const { value, done } = await reader.read(); if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n"); buffer = events.pop() || "";
+      for (const event of events) {
+        const line = event.split("\n").find((l) => l.startsWith("data:")); if (!line) continue;
+        const payload = line.slice(5).trim(); if (!payload || payload === "[DONE]") continue;
+        try { const obj = JSON.parse(payload); const delta = obj.choices?.[0]?.delta?.content || ""; if (delta) { assistantText += delta; setMessages((m) => { const copy = [...m]; copy[copy.length - 1] = { ...copy[copy.length - 1], role: "assistant", content: assistantText }; return copy; }); } } catch {}
+      }
+    }
+    if (persistAssistant && assistantText) await persistMessage(id, "assistant", assistantText);
+    if (historyAvailable && id) { try { const refreshed = await api("/conversations"); setConversations(refreshed.data || []); } catch { setHistoryAvailable(false); } }
+    return assistantText;
+  };
+
+  const sendChat = async () => {
+    const text = input.trim(); if (!text || sending || !selectedModel) return;
+    setSending(true); setInput(""); setFormError("");
+    const base = editingIndex === null ? messages : messages.slice(0, editingIndex);
+    const next = [...base, { role: "user" as const, content: text }]; setMessages([...next, { role: "assistant", content: "" }]);
+    const wasEdit = editingIndex !== null; setEditingIndex(null);
+    try { const id = await ensureConversation(); if (id) await persistMessage(id, "user", text); await streamChat(next, id); if (wasEdit && id) setFormError("پیام ویرایش‌شده به‌عنوان درخواست جدید پاسخ داده شد."); }
+    catch (err: any) { if (err?.name === "AbortError") setMessages((m) => m[m.length - 1]?.content ? m : m.slice(0, -1)); else setMessages((m) => { const copy = [...m]; copy[copy.length - 1] = { role: "assistant", content: `خطا: ${err.message}` }; return copy; }); }
+    finally { setSending(false); abortRef.current = null; }
+  };
+  const regenerate = async (index: number) => {
+    if (sending || index < 1 || messages[index]?.role !== "assistant" || messages[index - 1]?.role !== "user") return;
+    setSending(true); setFormError(""); const next = messages.slice(0, index); setMessages([...next, { role: "assistant", content: "" }]);
+    try { await streamChat(next, conversationId, true); } catch (err: any) { if (err?.name !== "AbortError") setMessages((m) => { const copy = [...m]; copy[copy.length - 1] = { role: "assistant", content: `خطا: ${err.message}` }; return copy; }); }
+    finally { setSending(false); abortRef.current = null; }
+  };
+  const stopGeneration = () => abortRef.current?.abort();
+  const editMessage = (index: number) => { const msg = messages[index]; if (msg?.role === "user" && !sending) { setInput(msg.content); setEditingIndex(index); } };
+
+  const deleteConversation = async (id: string) => { if (!historyAvailable || !confirm("این گفتگو حذف شود؟")) return; try { await api(`/conversations/${id}`, { method: "DELETE" }); if (conversationId === id) newConversation(); setConversations((items) => items.filter((x) => x.id !== id)); } catch (err: any) { setFormError(err.message); } };
+  const createKey = async (e: FormEvent<HTMLFormElement>) => { e.preventDefault(); setFormError(""); const fd = new FormData(e.currentTarget); try { const data = await api("/api-keys", { method: "POST", body: JSON.stringify({ alias: fd.get("alias"), models: [selectedModel], rpm_limit: Number(fd.get("rpm") || 30), duration: fd.get("duration") || "30d", max_budget: fd.get("max_budget") ? Number(fd.get("max_budget")) : null, budget_duration: fd.get("budget_duration") || "30d" }) }); setNewKey(data); setKeyModal(false); notify("کلید API با موفقیت ایجاد شد"); await load(); window.setTimeout(() => document.querySelector(".reveal")?.scrollIntoView({ behavior: "smooth", block: "center" }), 180); window.setTimeout(() => document.querySelector(".reveal")?.scrollIntoView({ behavior: "smooth", block: "center" }), 150); } catch (err: any) { setFormError(err.message); } };
+  const deleteKey = async (id: string) => { if (!confirm("این کلید لغو شود؟")) return; try { await api(`/api-keys/${id}`, { method: "DELETE" }); await load(); } catch (err: any) { setFormError(err.message); } };
+  const rotateKey = async (id: string) => { if (!confirm("کلید فعلی با یک کلید جدید جایگزین شود؟")) return; try { const data = await api(`/api-keys/${id}/rotate`, { method: "POST" }); setNewKey(data); notify("کلید API با موفقیت چرخانده شد"); await load(); } catch (err: any) { setFormError(err.message); } };
+
+  const sidebar = useMemo(() => { const items: any[] = [["dashboard", "داشبورد", "home"]]; if (user?.role === "admin" || user?.chat_enabled) items.push(["chat", "چت", "chat"]); if (user?.role === "admin" || user?.api_enabled) items.push(["keys", "کلیدهای API", "key"]); items.push(["usage", "مصرف و Usage", "chart"], ["account", "حساب کاربری", "user"]); if (user?.role === "admin" || user?.mlops_enabled) items.push(["mlops", "MLOps", "chart"]); if (user?.role === "admin") items.push(["admin", "مدیریت کاربران", "user"]); if (user?.role === "admin") items.push(["admin_usage", "مصرف API کاربران", "chart"]); return items; }, [user]);
+  const pageTitle = active === "dashboard" ? "داشبورد" : active === "chat" ? "گفتگو" : active === "keys" ? "کلیدهای API" : active === "usage" ? "مصرف و Usage" : active === "account" ? "حساب کاربری" : active === "admin" ? "مدیریت کاربران" : active === "admin_usage" ? "مصرف API کاربران" : "MLOps";
+  if (loading) return <div className="boot"><div className="brand-mark">T</div><div>در حال راه‌اندازی پنل…</div></div>;
+  if (!user) return <Auth mode={authMode} setMode={setAuthMode} submit={submitAuth} error={formError} />;
+  if (forcePasswordChange) return <ChangePassword user={user} onChange={changePassword} onLogout={logout} error={formError} />;
+
+  return <main className="app-shell">
+    {toast && (
+      <div className={`toast ${toast.type}`}>
+        <span>{toast.message}</span>
+        <button aria-label="بستن" onClick={() => setToast(null)}>×</button>
+      </div>
+    )}
+    <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={async () => { if (id === "mlops") { try { const gate = await api("/mlops/access"); window.open(gate.url, "_blank", "noopener,noreferrer"); } catch (err: any) { setFormError(err.message); } } else { setActive(id); } }}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
+    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><label className="theme-select-wrap"><span>استایل</span><select className="theme-select" value={theme} aria-label="انتخاب استایل پنل" onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="dark">Graphite · تیره</option><option value="light">Light · روشن</option><option value="midnight">Midnight · شبانه</option><option value="ocean">Ocean · اقیانوسی</option><option value="glass">Glass · شیشه‌ای</option><option value="paper">Paper · کاغذی</option></select></label><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}{active === "admin_usage" && user.role === "admin" && <AdminApiBudgets notify={notify} />} </section>
+    {keyModal && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کلید API</h3><button onClick={() => setKeyModal(false)}>×</button></div><form className="form-stack" onSubmit={createKey}><label>نام کلید<input name="alias" required placeholder="Production App" /></label><label>مدل<input value={selectedModel} readOnly /></label><label>محدودیت RPM<input name="rpm" type="number" defaultValue={30} min={1} /></label><label>انقضا<select name="duration" defaultValue="30d"><option value="30d">۳۰ روز</option><option value="90d">۹۰ روز</option><option value="365d">۱ سال</option><option value="">بدون انقضا</option></select></label>{formError && <div className="error-box">{formError}</div>}<button className="primary" type="submit">ایجاد کلید</button></form></div></div>}
+  </main>;
+}
+
+function Auth({ mode, setMode, submit, error }: any) { return <main className="auth-shell"><section className="auth-card"><div className="brand-lockup"><div className="brand-mark large">T</div><div><b>TaHa</b><span>هوش مصنوعی حرفه‌ای</span></div></div><h1>{mode === "login" ? "خوش آمدید" : "ساخت حساب کاربری"}</h1><p className="muted">دسترسی به چت و سرویس‌های هوش مصنوعی TaHa</p><form onSubmit={submit} className="form-stack">{mode === "register" && <label>نام<input name="name" required placeholder="نام شما" /></label>}<label>ایمیل<input name="email" type="email" required placeholder="you@example.com" /></label><label>رمز عبور<input name="password" type="password" minLength={8} required placeholder="حداقل ۸ کاراکتر" /></label>{error && <div className="error-box">{error}</div>}<button className="primary full" type="submit">{mode === "login" ? "ورود" : "ثبت‌نام"}</button></form><button className="link-btn" onClick={() => setMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "حساب ندارید؟ ثبت‌نام کنید" : "حساب دارید؟ وارد شوید"}</button></section></main>; }
+
+function ChangePassword({ user, onChange, onLogout, error }: any) {
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setBusy(true); setLocalError("");
+    const fd = new FormData(e.currentTarget);
+    const currentPassword = String(fd.get("current_password") || "");
+    const newPassword = String(fd.get("new_password") || "");
+    const confirmPassword = String(fd.get("confirm_password") || "");
+    if (newPassword !== confirmPassword) { setLocalError("تکرار رمز عبور یکسان نیست"); setBusy(false); return; }
+    try { await onChange(currentPassword, newPassword); }
+    catch (err: any) { setLocalError(err.message || "تغییر رمز عبور ناموفق بود"); }
+    finally { setBusy(false); }
+  };
+  return <main className="auth-shell"><section className="auth-card">
+    <div className="brand-lockup"><div className="brand-mark large">T</div><div><b>TaHa</b><span>هوش مصنوعی حرفه‌ای</span></div></div>
+    <h1>تغییر اجباری رمز عبور</h1>
+    <p className="muted">برای ادامه استفاده از پنل، ابتدا رمز عبور حساب {user?.email} را تغییر دهید.</p>
+    <form onSubmit={submit} className="form-stack">
+      <label>رمز عبور فعلی<input name="current_password" type="password" required /></label>
+      <label>رمز عبور جدید<input name="new_password" type="password" minLength={8} required placeholder="حداقل ۸ کاراکتر" /></label>
+      <label>تکرار رمز عبور جدید<input name="confirm_password" type="password" minLength={8} required /></label>
+      {(localError || error) && <div className="error-box">{localError || error}</div>}
+      <button className="primary full" type="submit" disabled={busy}>{busy ? "در حال تغییر…" : "تغییر رمز عبور"}</button>
+    </form>
+    <button className="link-btn" onClick={onLogout}>خروج</button>
+  </section></main>;
+}
+
+
+function AdminApiBudgets({ notify }: any) {
+  const [users, setUsers] = useState<any[]>([]);
+  const [selectedUser, setSelectedUser] = useState("");
+  const [keys, setKeys] = useState<any[]>([]);
+  const [draft, setDraft] = useState<Record<string, { max_budget: string; budget_duration: string }>>({});
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [loadingKeys, setLoadingKeys] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const unwrapRows = (value: any, keys: string[]) => {
+    if (Array.isArray(value)) return value;
+    for (const k of keys) if (Array.isArray(value?.[k])) return value[k];
+    return [];
+  };
+
+  const loadUsers = async () => {
+    setLoadingUsers(true); setError("");
+    try {
+      const result = await api("/admin/users");
+      const rows = unwrapRows(result, ["data", "users"]);
+      setUsers(rows);
+      if (!selectedUser && rows[0]?.id) setSelectedUser(rows[0].id);
+      else if (selectedUser && !rows.some((u: any) => u.id === selectedUser)) setSelectedUser(rows[0]?.id || "");
+    } catch (err: any) {
+      setError(err?.message || "خطا در دریافت کاربران");
+    } finally { setLoadingUsers(false); }
+  };
+
+  const loadKeys = async (userId: string) => {
+    if (!userId) { setKeys([]); return; }
+    setLoadingKeys(true); setError("");
+    try {
+      const result = await api(`/admin/users/${userId}/api-keys`);
+      const rows = unwrapRows(result, ["data", "keys"]);
+      setKeys(rows);
+      setDraft((old) => {
+        const next = { ...old };
+        for (const k of rows) {
+          next[k.id] = {
+            max_budget: k.max_budget != null ? String(k.max_budget) : "",
+            budget_duration: k.budget_duration || "30d",
+          };
+        }
+        return next;
+      });
+    } catch (err: any) {
+      setError(err?.message || "خطا در دریافت کلیدهای API"); setKeys([]);
+    } finally { setLoadingKeys(false); }
+  };
+
+  useEffect(() => { loadUsers(); }, []);
+  useEffect(() => { loadKeys(selectedUser); }, [selectedUser]);
+
+  const save = async (key: any) => {
+    const d = draft[key.id] || { max_budget: "", budget_duration: "30d" };
+    const amount = Number(d.max_budget);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError("سقف مصرف باید بیشتر از صفر باشد");
+      return;
+    }
+    setSaving(key.id); setError("");
+    try {
+      const result = await api(`/admin/api-keys/${key.id}/budget`, {
+        method: "POST",
+        body: JSON.stringify({ max_budget: amount, budget_duration: d.budget_duration || "30d" }),
+      });
+      const updated = result?.data ?? result;
+      setKeys((rows) => rows.map((row) => row.id === key.id ? { ...row, ...updated } : row));
+      notify?.("سقف مصرف API با موفقیت ذخیره شد");
+    } catch (err: any) {
+      setError(err?.message || "ذخیره سقف مصرف ناموفق بود");
+    } finally { setSaving(null); }
+  };
+
+  const selected = users.find((u: any) => u.id === selectedUser);
+
+  return <div className="content admin-api-budgets">
+    <div className="page-intro">
+      <div><div className="eyebrow">API GOVERNANCE</div><h1>مدیریت مصرف API کاربران</h1><p>سقف مصرف و دوره بودجه هر API Key را از اینجا تعیین کنید. اعداد مصرف از LiteLLM خوانده می‌شوند.</p></div>
+      <button type="button" className="secondary" onClick={() => { loadUsers(); loadKeys(selectedUser); }}>بازخوانی</button>
+    </div>
+
+    {error && <div className="error-box">{error}</div>}
+
+    <div className="panel admin-budget-panel">
+      <div className="admin-budget-toolbar">
+        <label>کاربر
+          <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} disabled={loadingUsers}>
+            <option value="">انتخاب کاربر</option>
+            {users.map((u: any) => <option key={u.id} value={u.id}>{u.name} — {u.email}</option>)}
+          </select>
+        </label>
+        {selected && <div className="admin-budget-user-summary"><b>{selected.name}</b><span>{selected.email}</span></div>}
+      </div>
+
+      {loadingUsers || loadingKeys ? <div className="empty-card">در حال دریافت اطلاعات…</div> : !selectedUser ? <div className="empty-card">کاربری برای مدیریت انتخاب نشده است.</div> : keys.length === 0 ? <div className="empty-card"><h3>کلید API ندارد</h3><p>برای این کاربر هنوز API Key فعالی ثبت نشده است.</p></div> : <div className="admin-budget-table-wrap">
+        <div className="admin-budget-table-head"><span>کلید</span><span>مصرف فعلی</span><span>سقف</span><span>دوره</span><span></span></div>
+        {keys.map((k: any) => {
+          const d = draft[k.id] || { max_budget: k.max_budget != null ? String(k.max_budget) : "", budget_duration: k.budget_duration || "30d" };
+          return <div className="admin-budget-row" key={k.id}>
+            <div><b>{k.alias}</b><small>{k.masked}</small></div>
+            <div className="admin-budget-spend">${Number(k.spend || 0).toFixed(4)}{k.max_budget != null ? ` / $${Number(k.max_budget).toFixed(2)}` : " / بدون سقف"}</div>
+            <input aria-label={`سقف مصرف ${k.alias}`} type="number" min="0.01" step="0.01" value={d.max_budget} onChange={(e) => setDraft((v) => ({ ...v, [k.id]: { ...d, max_budget: e.target.value } }))} />
+            <select aria-label={`دوره بودجه ${k.alias}`} value={d.budget_duration} onChange={(e) => setDraft((v) => ({ ...v, [k.id]: { ...d, budget_duration: e.target.value } }))}>
+              <option value="1d">روزانه</option><option value="7d">هفتگی</option><option value="30d">ماهانه</option>
+            </select>
+            <button type="button" className="primary" onClick={() => save(k)} disabled={saving === k.id}>{saving === k.id ? "در حال ذخیره…" : "ذخیره"}</button>
+          </div>;
+        })}
+      </div>}
+    </div>
+  </div>;
+}
+
+function AdminUsers({ notify }: any) {
+  const [users, setUsers] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+
+  const loadUsers = async () => {
+    setBusy(true); setError("");
+    try { const result = await api("/admin/users"); setUsers(result.data || []); }
+    catch (err: any) { setError(err.message || "خطا در دریافت کاربران"); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { loadUsers(); }, []);
+
+  const updateUser = async (id: string, patch: any) => {
+    try {
+      await api(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      await loadUsers(); notify("اطلاعات کاربر به‌روزرسانی شد");
+    } catch (err: any) { setError(err.message || "خطا در به‌روزرسانی کاربر"); }
+  };
+
+  const createUser = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setError("");
+    const fd = new FormData(e.currentTarget);
+    try {
+      await api("/admin/users", { method: "POST", body: JSON.stringify({
+        name: fd.get("name"), email: fd.get("email"), password: fd.get("password"),
+        chat_enabled: fd.get("chat_enabled") === "on", api_enabled: fd.get("api_enabled") === "on", mlops_enabled: fd.get("mlops_enabled") === "on",
+      }) });
+      setShowCreate(false); await loadUsers(); notify("کاربر ایجاد شد و باید در اولین ورود رمز خود را تغییر دهد");
+    } catch (err: any) { setError(err.message || "خطا در ایجاد کاربر"); }
+  };
+
+  const [userKeys, setUserKeys] = useState<Record<string, any[]>>({});
+  const [loadingKeys, setLoadingKeys] = useState<string | null>(null);
+  const [budgetDraft, setBudgetDraft] = useState<Record<string, {max_budget: string; budget_duration: string}>>({});
+  const loadUserKeys = async (id: string) => {
+    setLoadingKeys(id); setError("");
+    try { const result = await api(`/admin/users/${id}/api-keys`); const items = result.data || []; setUserKeys((v) => ({...v, [id]: items})); const next = {...budgetDraft}; items.forEach((k: any) => { next[k.id] = { max_budget: k.max_budget != null ? String(k.max_budget) : "", budget_duration: k.budget_duration || "30d" }; }); setBudgetDraft(next); }
+    catch (err: any) { setError(err.message || "خطا در دریافت کلیدها"); }
+    finally { setLoadingKeys(null); }
+  };
+  const saveBudget = async (key: any) => {
+    const draft = budgetDraft[key.id];
+    const amount = Number(draft?.max_budget);
+    if (!Number.isFinite(amount) || amount <= 0) { setError("سقف مصرف باید بیشتر از صفر باشد"); return; }
+    try { const result = await api(`/admin/api-keys/${key.id}/budget`, { method: "POST", body: JSON.stringify({ max_budget: amount, budget_duration: draft.budget_duration || "30d" }) }); setUserKeys((v) => ({...v, [key._userId]: (v[key._userId] || []).map((x: any) => x.id === key.id ? result.data : x)})); notify("سقف مصرف کلید به‌روزرسانی شد"); await loadUserKeys(key._userId); }
+    catch (err: any) { setError(err.message || "خطا در تنظیم سقف مصرف"); }
+  };
+  const statusLabel: Record<string,string> = { pending: "در انتظار", active: "فعال", disabled: "غیرفعال", rejected: "رد شده" };
+  return <div className="content">
+    <div className="page-intro"><div><div className="eyebrow">ADMIN CENTER</div><h1>مدیریت کاربران</h1><p>تأیید ثبت‌نام، تغییر وضعیت، نقش و سه دسترسی مستقل سرویس‌ها.</p></div><button className="primary" onClick={() => setShowCreate(true)}><Icon name="plus"/>ساخت کاربر</button></div>
+    {error && <div className="global-notice">{error}<button onClick={() => setError("")}>×</button></div>}
+    <div className="admin-table" style={{display:"grid",gap:12}}>
+      {users.map((u) => <div key={u.id} className="dashboard-card" style={{padding:18}}>
+        <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"center",flexWrap:"wrap"}}>
+          <div><strong>{u.name}</strong><div className="muted">{u.email}</div></div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <select value={u.status} onChange={(e) => updateUser(u.id,{status:e.target.value})}>{Object.entries(statusLabel).map(([v,l]) => <option key={v} value={v}>{l}</option>)}</select>
+            <select value={u.role} onChange={(e) => updateUser(u.id,{role:e.target.value})}><option value="user">کاربر</option><option value="admin">مدیر</option></select>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:18,flexWrap:"wrap",marginTop:14}}>
+          <label><input type="checkbox" checked={u.chat_enabled} onChange={(e) => updateUser(u.id,{chat_enabled:e.target.checked})}/> Chat</label>
+          <label><input type="checkbox" checked={u.api_enabled} onChange={(e) => updateUser(u.id,{api_enabled:e.target.checked})}/> API Key</label>
+          <label><input type="checkbox" checked={u.mlops_enabled} onChange={(e) => updateUser(u.id,{mlops_enabled:e.target.checked})}/> MLOps</label>
+          {u.must_change_password && <span className="pill">نیازمند تغییر رمز</span>}
+        </div>
+        {u.status === "pending" && <div style={{display:"flex",gap:8,marginTop:14}}><button className="primary" onClick={() => updateUser(u.id,{status:"active"})}>تأیید</button><button className="danger" onClick={() => updateUser(u.id,{status:"rejected"})}>رد</button></div>}
+      </div>)}
+      {!busy && users.length === 0 && <div className="empty-card">کاربری ثبت نشده است.</div>}
+      {busy && <div className="empty-card">در حال دریافت کاربران…</div>}
+    </div>
+    {showCreate && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کاربر جدید</h3><button onClick={() => setShowCreate(false)}>×</button></div><form className="form-stack" onSubmit={createUser}>
+      <label>نام<input name="name" required minLength={2}/></label><label>ایمیل<input name="email" type="email" required/></label><label>رمز موقت<input name="password" type="password" minLength={8} required/></label>
+      <label><input name="chat_enabled" type="checkbox" defaultChecked/> Chat</label><label><input name="api_enabled" type="checkbox" defaultChecked/> API Key</label><label><input name="mlops_enabled" type="checkbox"/> MLOps</label>
+      {error && <div className="error-box">{error}</div>}<button className="primary" type="submit">ایجاد کاربر</button>
+    </form></div></div>}
+  </div>;
+}
+
+function Dashboard({ user, data, keys, onChat, onKeys }: any) {
+  const activeKeys = keys.filter((k: Key) => k.status === "active").length;
+  const totalSpend = Number(data?.spend || 0);
+  const models = Array.isArray(data?.models) && data.models.length
+    ? data.models
+    : ["Qwen3-32B"];
+
+  return (
+    <div className="content dashboard-page">
+      <div className="hero dashboard-hero">
+        <div>
+          <div className="eyebrow">TAHA AI</div>
+          <h1>سلام {user.name} 👋</h1>
+          <p>مرکز مدیریت سرویس‌های هوش مصنوعی و API شما.</p>
+        </div>
+
+        <button className="primary dashboard-main-action" onClick={onChat}>
+          <Icon name="chat" />
+          شروع گفتگو
+        </button>
+      </div>
+
+      <div className="dashboard-stats">
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chat" /></div>
+          <div>
+            <span>مدل فعال</span>
+            <strong>{models[0]}</strong>
+            <small>{models.length} مدل در دسترس</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="key" /></div>
+          <div>
+            <span>کلیدهای فعال</span>
+            <strong>{activeKeys}</strong>
+            <small>{keys.length} کلید ثبت‌شده</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chart" /></div>
+          <div>
+            <span>هزینه ثبت‌شده</span>
+            <strong>${totalSpend.toFixed(4)}</strong>
+            <small>مصرف فعلی سرویس</small>
+          </div>
+        </div>
+      </div>
+
+      <div className="dashboard-grid">
+        <section className="dashboard-card dashboard-overview">
+          <div className="dashboard-card-head">
+            <div>
+              <span className="eyebrow">OVERVIEW</span>
+              <h3>وضعیت سرویس</h3>
+            </div>
+            <span className="service-badge">
+              <i />
+              فعال
+            </span>
+          </div>
+
+          <div className="service-row">
+            <div>
+              <b>Qwen3-32B</b>
+              <span>مدل پیش‌فرض پلتفرم TaHa</span>
+            </div>
+            <strong>Ready</strong>
+          </div>
+
+          <div className="service-row">
+            <div>
+              <b>API Gateway</b>
+              <span>اتصال امن به LiteLLM</span>
+            </div>
+            <strong>Online</strong>
+          </div>
+
+          <div className="service-row">
+            <div>
+              <b>حساب کاربری</b>
+              <span>{user.email}</span>
+            </div>
+            <strong>Active</strong>
+          </div>
+        </section>
+
+        <section className="dashboard-card">
+          <div className="dashboard-card-head">
+            <div>
+              <span className="eyebrow">QUICK ACTIONS</span>
+              <h3>دسترسی سریع</h3>
+            </div>
+          </div>
+
+          <div className="dashboard-actions">
+            <button onClick={onChat}>
+              <Icon name="chat" />
+              <div>
+                <b>گفتگوی جدید</b>
+                <span>شروع یک مکالمه با مدل</span>
+              </div>
+            </button>
+
+            <button onClick={onKeys}>
+              <Icon name="key" />
+              <div>
+                <b>مدیریت API Key</b>
+                <span>ایجاد، چرخش و لغو کلیدها</span>
+              </div>
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ title, value }: { title: string; value: string | number }) { return <div className="stat"><small>{title}</small><strong>{value}</strong><span>وضعیت فعلی</span></div>; }
+function Chat({ selectedModel, setSelectedModel, models, messages, input, setInput, sendChat, sending, onNew, onStop, editingIndex, cancelEdit, onEdit, onRegenerate, historyAvailable }: any) { const end = useRef<HTMLDivElement>(null); useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]); return <div className="chat-view"><div className="chat-head"><div><h3>{messages.length ? "گفتگو" : "گفتگوی جدید"}</h3><span>{historyAvailable ? "گفتگو و تاریخچه شما در پنل ذخیره می‌شود." : "پاسخ‌ها توسط مدل انتخاب‌شده تولید می‌شوند."}</span></div><div className="chat-tools"><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select><button className="secondary" onClick={onNew}>گفتگوی جدید</button></div></div>{editingIndex !== null && <div className="edit-banner">در حال ویرایش پیام <button onClick={cancelEdit}>لغو</button></div>}<div className="messages">{messages.length === 0 ? <div className="empty-chat"><div className="brand-mark large">T</div><h2>چطور می‌توانم کمک کنم؟</h2><p>سؤال خود را بنویسید یا یکی از نمونه‌ها را انتخاب کنید.</p><div className="suggestions"><button onClick={() => setInput("یک متن حرفه‌ای برای معرفی محصول بنویس")}>معرفی محصول</button><button onClick={() => setInput("این کد را بررسی و بهینه کن")}>بررسی کد</button><button onClick={() => setInput("یک برنامه کاری هفتگی پیشنهاد بده")}>برنامه‌ریزی</button></div></div> : messages.map((m: Msg, i: number) => <div key={m.id || i} className={`message ${m.role}`}><div className="bubble-wrap"><div className="bubble">{m.role === "assistant" ? <Markdown text={m.content || (sending && i === messages.length - 1 ? "در حال تولید پاسخ…" : "")}/> : <div className="user-text">{m.content}</div>}</div><div className="message-actions">{m.role === "user" && <button onClick={() => onEdit(i)} disabled={sending}><Icon name="edit"/>ویرایش</button>}{m.role === "assistant" && <button onClick={() => onRegenerate(i)} disabled={sending}><Icon name="refresh"/>پاسخ دوباره</button>}{m.content && <button onClick={() => navigator.clipboard?.writeText(m.content)}><Icon name="copy"/>کپی</button>}</div></div></div>)}<div ref={end}/></div><div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } }} placeholder="پیام خود را بنویسید…"/><div className="composer-actions">{sending ? <button className="stop-btn" onClick={onStop}><Icon name="stop"/>توقف</button> : <button className="send-btn-inline" onClick={sendChat} disabled={!input.trim() || !selectedModel}><Icon name="send"/></button>}</div><div className="composer-hint">Enter برای ارسال · Shift+Enter برای خط جدید{historyAvailable ? " · ذخیره خودکار تاریخچه" : ""}</div></div></div>; }
+function Keys({ keys, models, selectedModel, setSelectedModel, deleteKey, rotateKey, openModal, newKey, setNewKey, notify }: any) { return <div className="content"><div className="page-intro"><div><div className="eyebrow">API CENTER</div><h1>کلیدهای API</h1><p>کلیدهای دسترسی خود را مدیریت کنید و هر کلید را به مدل‌های مجاز محدود کنید.</p></div><button className="primary" onClick={openModal}><Icon name="plus"/>ساخت کلید جدید</button></div><div className="toolbar"><label>مدل پیش‌فرض برای کلید جدید<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select></label></div>{newKey && <div className="reveal"><div><b>کلید جدید ایجاد شد</b><p>این مقدار را همین حالا کپی و در محل امن نگهداری کنید.</p><code>{newKey.key}</code></div><button onClick={() => navigator.clipboard?.writeText(newKey.key).then(() => notify("کلید API کپی شد"))}><Icon name="copy"/>کپی</button><button onClick={() => setNewKey(null)}>×</button></div>}<div className="key-grid">{keys.map((k: Key) => <div className="key-card" key={k.id}><div className="key-top"><div className="key-icon"><Icon name="key"/></div><div><b>{k.alias}</b><small>{k.masked}</small></div><span className={`pill ${k.status}`}>{k.status === "active" ? "فعال" : "لغو شده"}</span></div><div className="key-meta"><div><small>مدل</small><strong>{k.models.join("، ")}</strong></div><div><small>RPM</small><strong>{k.rpm_limit ?? "—"}</strong></div><div><small>مصرف</small><strong>${Number(k.spend || 0).toFixed(4)}</strong></div></div><div className="key-actions"><button onClick={() => rotateKey(k.id)} disabled={k.status !== "active"}><Icon name="refresh"/>چرخش</button><button className="danger" onClick={() => deleteKey(k.id)} disabled={k.status !== "active"}><Icon name="trash"/>لغو کلید</button></div></div>)}</div>{keys.length === 0 && <div className="empty-card"><h3>هنوز کلیدی ندارید</h3><p>اولین کلید API خود را بسازید.</p><button className="primary" onClick={openModal}>ساخت اولین کلید</button></div>}</div>; }
+function Usage({ keys, data }: any) {
+  const rows = Array.isArray(data?.keys) ? data.keys : keys;
+  const activeKeys = keys.filter((k: Key) => k.status === "active").length;
+  const totalSpend = Number(data?.total_spend ?? data?.spend ?? 0);
+  const messageCount = Number(data?.messages ?? 0);
+
+  const maxSpend = Math.max(
+    ...rows.map((k: any) => Number(k.spend || 0)),
+    0.000001
+  );
+
+  return (
+    <div className="content usage-page">
+      <div className="page-intro usage-intro">
+        <div>
+          <div className="eyebrow">USAGE CENTER</div>
+          <h1>مصرف و Usage</h1>
+          <p>نمای دقیق وضعیت مصرف سرویس‌های TaHa بر اساس داده‌های واقعی حساب شما.</p>
+        </div>
+      </div>
+
+      <div className="dashboard-stats">
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="key" /></div>
+          <div>
+            <span>کلیدهای فعال</span>
+            <strong>{activeKeys}</strong>
+            <small>از {keys.length} کلید ثبت‌شده</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chart" /></div>
+          <div>
+            <span>هزینه ثبت‌شده</span>
+            <strong>${totalSpend.toFixed(4)}</strong>
+            <small>مجموع مصرف گزارش‌شده</small>
+          </div>
+        </div>
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon"><Icon name="chat" /></div>
+          <div>
+            <span>پیام‌ها</span>
+            <strong>{messageCount}</strong>
+            <small>پیام ذخیره‌شده در Portal</small>
+          </div>
+        </div>
+      </div>
+
+      <section className="dashboard-card usage-card">
+        <div className="dashboard-card-head">
+          <div>
+            <span className="eyebrow">API KEYS</span>
+            <h3>مصرف به تفکیک کلید</h3>
+          </div>
+          <span className="usage-total">${totalSpend.toFixed(4)}</span>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="usage-empty">
+            <div className="dashboard-stat-icon"><Icon name="chart" /></div>
+            <h3>هنوز داده‌ای برای مصرف وجود ندارد</h3>
+            <p>پس از استفاده از API، مصرف هر کلید در این بخش نمایش داده می‌شود.</p>
+          </div>
+        ) : (
+          <div className="usage-list">
+            {rows.map((k: any) => {
+              const spend = Number(k.spend || 0);
+              const budget = k.max_budget != null ? Number(k.max_budget) : null;
+              const width = budget && budget > 0 ? Math.min(100, (spend / budget) * 100) : Math.max(2, (spend / maxSpend) * 100);
+
+              return (
+                <div className="usage-item" key={k.id}>
+                  <div className="usage-item-top">
+                    <div>
+                      <b>{k.alias}</b>
+                      <span className={`usage-status ${k.status}`}>
+                        {k.status === "active" ? "فعال" : "لغو شده"}
+                      </span>
+                    </div>
+                    <strong>${spend.toFixed(4)}</strong>
+                  </div>
+
+                  <div className="usage-track">
+                    <i style={{ width: `${width}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Account({ user, theme, setTheme }: any) {
+  return (
+    <div className="content account-page">
+      <div className="page-intro">
+        <div>
+          <div className="eyebrow">ACCOUNT</div>
+          <h1>حساب کاربری</h1>
+          <p>اطلاعات حساب و ترجیحات پنل TaHa را مدیریت کنید.</p>
+        </div>
+      </div>
+
+      <div className="account-grid">
+        <section className="profile-card account-profile">
+          <div className="avatar huge">T</div>
+          <div>
+            <span className="eyebrow">PROFILE</span>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+            <span className="pill active">کاربر فعال</span>
+          </div>
+        </section>
+
+        <section className="info-card">
+          <div>
+            <span className="eyebrow">APPEARANCE</span>
+            <h3>استایل پنل</h3>
+            <p>یکی از پوسته‌های آماده TaHa را انتخاب کنید.</p>
+          </div>
+          <div className="theme-preset-grid">
+            {[
+              ["dark", "Graphite", "تیره کلاسیک"],
+              ["light", "Light", "روشن"],
+              ["midnight", "Midnight", "شبانه آبی"],
+              ["ocean", "Ocean", "آبی عمیق"],
+              ["glass", "Glass", "شیشه‌ای"],
+              ["paper", "Paper", "کاغذی گرم"],
+            ].map(([id, label, desc]) => (
+              <button key={id} type="button" className={`theme-preset ${theme === id ? "selected" : ""}`} onClick={() => setTheme(id as typeof theme)}>
+                <span className={`theme-swatch ${id}`} />
+                <span><b>{label}</b><small>{desc}</small></span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="info-card account-security-card">
+          <div className="eyebrow">SECURITY</div>
+          <h3>امنیت حساب</h3>
+          <div className="security-item">
+            <div>
+              <b>نشست فعلی</b>
+              <span>احراز هویت با نشست امن مرورگر انجام می‌شود.</span>
+            </div>
+            <span className="service-badge"><i /> فعال</span>
+          </div>
+          <div className="security-item">
+            <div>
+              <b>API Master Key</b>
+              <span>اطلاعات مدیریتی LiteLLM هرگز در مرورگر قرار نمی‌گیرد.</span>
+            </div>
+            <span className="service-badge"><i /> محافظت‌شده</span>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+

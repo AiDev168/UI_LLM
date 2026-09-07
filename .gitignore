@@ -1,7 +1,14 @@
 .env
+.env.*
+!.env.example
+
 postgres-data/
-node_modules/
-.next/
-__pycache__/
 *.pyc
+__pycache__/
+.next/
+node_modules/
+npm-debug.log*
 .DS_Store
+
+# Local backup copies
+backend/app/*.before-*.py

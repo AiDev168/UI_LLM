@@ -8,3 +8,5 @@ argon2-cffi>=25,<26
 cryptography>=45,<47
 httpx>=0.28,<1
 python-multipart>=0.0.20,<1
+
+alembic>=1.16,<2
