@@ -524,6 +524,12 @@ class KeyCreateIn(BaseModel):
         default=None,
         ge=0,
     )
+    budget_duration: str | None = "30d"
+
+
+class BudgetUpdateIn(BaseModel):
+    max_budget: float = Field(gt=0)
+    budget_duration: str = Field(min_length=2, max_length=16)
 
 
 class ChatIn(BaseModel):
@@ -901,6 +907,97 @@ def admin_update_user(
         }
 
 
+@app.get("/admin/users/{user_id}/api-keys")
+async def admin_list_user_keys(
+    user_id: str,
+    _admin: User = Depends(require_admin),
+) -> dict[str, Any]:
+    with db() as session:
+        target = session.get(User, user_id)
+        if not target:
+            raise HTTPException(404, "کاربر پیدا نشد")
+        items = session.scalars(
+            select(PortalKey)
+            .where(PortalKey.user_id == user_id)
+            .order_by(PortalKey.created_at.desc())
+        ).all()
+    pairs = []
+    for item in items:
+        try:
+            token = fernet.decrypt(item.token_encrypted.encode()).decode()
+        except Exception:
+            token = None
+        pairs.append((item, token))
+    valid = [(item, token) for item, token in pairs if token]
+    infos = await key_usage_many([token for _, token in valid])
+    info_by_id = {item.id: info for (item, _), info in zip(valid, infos)}
+    return {"data": [key_view(item, info_by_id.get(item.id, {})) for item, _ in pairs]}
+
+
+@app.post("/admin/api-keys/{key_id}/budget")
+async def admin_update_key_budget(
+    key_id: str,
+    payload: BudgetUpdateIn,
+    _admin: User = Depends(require_admin),
+) -> dict[str, Any]:
+    with db() as session:
+        item = session.get(PortalKey, key_id)
+        if not item:
+            raise HTTPException(404, "کلید پیدا نشد")
+        try:
+            token = fernet.decrypt(item.token_encrypted.encode()).decode()
+        except Exception as exc:
+            raise HTTPException(500, "رمز کلید قابل بازیابی نیست") from exc
+
+    info = await key_usage(token)
+    current_windows = info.get("budget_limits")
+    window = {
+        "max_budget": payload.max_budget,
+        "budget_duration": payload.budget_duration,
+    }
+    if isinstance(current_windows, list) and current_windows:
+        # Preserve existing windows. Update the matching duration when possible;
+        # otherwise update the first window and keep its reset point.
+        windows = []
+        matched = False
+        for existing in current_windows:
+            if not isinstance(existing, dict):
+                continue
+            current = dict(existing)
+            if current.get("budget_duration") == payload.budget_duration and not matched:
+                current.update(window)
+                if existing.get("reset_at"):
+                    current["reset_at"] = existing["reset_at"]
+                matched = True
+            windows.append(current)
+        if not matched and windows:
+            current = dict(windows[0])
+            current.update(window)
+            if windows[0].get("reset_at"):
+                current["reset_at"] = windows[0]["reset_at"]
+            windows[0] = current
+        elif not windows:
+            windows = [window]
+        body = {
+            "key": token,
+            "max_budget": payload.max_budget,
+            "budget_duration": payload.budget_duration,
+            "budget_limits": windows,
+        }
+    else:
+        body = {
+            "key": token,
+            "max_budget": payload.max_budget,
+            "budget_duration": payload.budget_duration,
+        }
+
+    await litellm_request("POST", "/key/update", json_body=body)
+    updated = await key_usage(token)
+    with db() as session:
+        item = session.get(PortalKey, key_id)
+    return {"data": key_view(item, updated)}
+
+
 @app.post("/auth/logout")
 def logout(response: Response) -> dict[str, bool]:
     response.delete_cookie(
@@ -963,7 +1060,7 @@ async def models(
 # ---------------------------------------------------------------------------
 
 @app.get("/api-keys", dependencies=[Depends(require_permission("api"))])
-def list_keys(
+async def list_keys(
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     with db() as session:
@@ -972,12 +1069,18 @@ def list_keys(
             .where(PortalKey.user_id == user.id)
             .order_by(PortalKey.created_at.desc())
         ).all()
+        pairs = []
+        for item in items:
+            try:
+                token = fernet.decrypt(item.token_encrypted.encode()).decode()
+            except Exception:
+                token = None
+            pairs.append((item, token))
 
-        records = [
-            key_view(item)
-            for item in items
-        ]
-
+    valid = [(item, token) for item, token in pairs if token]
+    infos = await key_usage_many([token for _, token in valid])
+    info_by_id = {item.id: info for (item, _), info in zip(valid, infos)}
+    records = [key_view(item, info_by_id.get(item.id, {})) for item, _ in pairs]
     return {"data": records}
 
 
@@ -1005,6 +1108,8 @@ async def create_key(
 
     if payload.max_budget is not None:
         body["max_budget"] = payload.max_budget
+        if payload.budget_duration:
+            body["budget_duration"] = payload.budget_duration
 
     response = await litellm_request(
         "POST",
@@ -1121,6 +1226,10 @@ async def rotate_key(
             or ["Qwen3-32B"]
         )
 
+        try:
+            old_info = await key_usage(old_token)
+        except Exception:
+            old_info = {}
         body = {
             "key_alias": (
                 f"hinaa-user-{user.id[:8]}-"
@@ -1136,6 +1245,10 @@ async def rotate_key(
                 "rotated_from": old.id,
             },
         }
+        if old_info.get("max_budget") is not None:
+            body["max_budget"] = old_info.get("max_budget")
+            if old_info.get("budget_duration"):
+                body["budget_duration"] = old_info.get("budget_duration")
 
     response = await litellm_request(
         "POST",
@@ -1484,10 +1597,19 @@ async def usage(
 
         total_spend += spend
 
+        max_budget = info.get("max_budget")
+        try:
+            remaining = max(0.0, float(max_budget) - spend) if max_budget is not None else None
+        except (TypeError, ValueError):
+            remaining = None
         key_records.append({
             "id": item.id,
             "alias": item.alias,
             "spend": spend,
+            "max_budget": max_budget,
+            "remaining_budget": remaining,
+            "budget_duration": info.get("budget_duration"),
+            "budget_reset_at": info.get("budget_reset_at"),
             "status": item.status,
         })
 

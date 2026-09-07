@@ -14,7 +14,7 @@ type User = {
   must_change_password: boolean;
 };
 type Model = { id: string };
-type Key = { id: string; alias: string; masked: string; models: string[]; rpm_limit: number | null; spend: number; status: string; expires_at?: string | null };
+type Key = { id: string; alias: string; masked: string; models: string[]; rpm_limit: number | null; spend: number; max_budget?: number | null; remaining_budget?: number | null; budget_duration?: string | null; budget_reset_at?: string | null; status: string; expires_at?: string | null };
 type Msg = { role: "user" | "assistant"; content: string; id?: string };
 type Conversation = { id: string; title: string; model: string; updated_at: string };
 
@@ -91,6 +91,14 @@ export default function Portal() {
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState("dashboard");
+  const forcePageReset = () => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector(".main-panel") as HTMLElement | null;
+      if (el) el.scrollTo({ top: 0, behavior: "auto" });
+      window.scrollTo({ top: 0, behavior: "auto" });
+    });
+  };
+
   const [models, setModels] = useState<Model[]>([]);
   const [keys, setKeys] = useState<Key[]>([]);
   const [dashboard, setDashboard] = useState<any>(null);
@@ -113,10 +121,10 @@ export default function Portal() {
     setToast({ message, type });
     window.setTimeout(() => setToast(null), 2800);
   };
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light" | "midnight" | "glass" | "paper" | "ocean">("dark");
   const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => { const saved = window.localStorage.getItem("hinaa-theme") as "dark" | "light" | null; if (saved) setTheme(saved); }, []);
+  useEffect(() => { const saved = window.localStorage.getItem("hinaa-theme") as typeof theme | null; if (saved) setTheme(saved); }, []);
   useEffect(() => { document.documentElement.dataset.theme = theme; window.localStorage.setItem("hinaa-theme", theme); }, [theme]);
 
   const load = async () => {
@@ -156,6 +164,7 @@ export default function Portal() {
     }
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => { forcePageReset(); }, [active]);
   const refreshUsage = async () => {
     try {
       const result = await api("/usage");
@@ -168,6 +177,7 @@ export default function Portal() {
     }
   };
   useEffect(() => { if (user && active === "usage") refreshUsage(); }, [user, active]);
+  useEffect(() => { const el = document.querySelector(".main-panel"); if (el) el.scrollTop = 0; }, [active]);
 
   const submitAuth = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault(); setFormError("");
@@ -243,12 +253,12 @@ export default function Portal() {
   const editMessage = (index: number) => { const msg = messages[index]; if (msg?.role === "user" && !sending) { setInput(msg.content); setEditingIndex(index); } };
 
   const deleteConversation = async (id: string) => { if (!historyAvailable || !confirm("این گفتگو حذف شود؟")) return; try { await api(`/conversations/${id}`, { method: "DELETE" }); if (conversationId === id) newConversation(); setConversations((items) => items.filter((x) => x.id !== id)); } catch (err: any) { setFormError(err.message); } };
-  const createKey = async (e: FormEvent<HTMLFormElement>) => { e.preventDefault(); setFormError(""); const fd = new FormData(e.currentTarget); try { const data = await api("/api-keys", { method: "POST", body: JSON.stringify({ alias: fd.get("alias"), models: [selectedModel], rpm_limit: Number(fd.get("rpm") || 30), duration: fd.get("duration") || "30d" }) }); setNewKey(data); setKeyModal(false); notify("کلید API با موفقیت ایجاد شد"); await load(); } catch (err: any) { setFormError(err.message); } };
+  const createKey = async (e: FormEvent<HTMLFormElement>) => { e.preventDefault(); setFormError(""); const fd = new FormData(e.currentTarget); try { const data = await api("/api-keys", { method: "POST", body: JSON.stringify({ alias: fd.get("alias"), models: [selectedModel], rpm_limit: Number(fd.get("rpm") || 30), duration: fd.get("duration") || "30d", max_budget: fd.get("max_budget") ? Number(fd.get("max_budget")) : null, budget_duration: fd.get("budget_duration") || "30d" }) }); setNewKey(data); setKeyModal(false); notify("کلید API با موفقیت ایجاد شد"); await load(); window.setTimeout(() => document.querySelector(".reveal")?.scrollIntoView({ behavior: "smooth", block: "center" }), 180); window.setTimeout(() => document.querySelector(".reveal")?.scrollIntoView({ behavior: "smooth", block: "center" }), 150); } catch (err: any) { setFormError(err.message); } };
   const deleteKey = async (id: string) => { if (!confirm("این کلید لغو شود؟")) return; try { await api(`/api-keys/${id}`, { method: "DELETE" }); await load(); } catch (err: any) { setFormError(err.message); } };
   const rotateKey = async (id: string) => { if (!confirm("کلید فعلی با یک کلید جدید جایگزین شود؟")) return; try { const data = await api(`/api-keys/${id}/rotate`, { method: "POST" }); setNewKey(data); notify("کلید API با موفقیت چرخانده شد"); await load(); } catch (err: any) { setFormError(err.message); } };
 
-  const sidebar = useMemo(() => { const items: any[] = [["dashboard", "داشبورد", "home"]]; if (user?.role === "admin" || user?.chat_enabled) items.push(["chat", "چت", "chat"]); if (user?.role === "admin" || user?.api_enabled) items.push(["keys", "کلیدهای API", "key"]); items.push(["usage", "مصرف و Usage", "chart"], ["account", "حساب کاربری", "user"]); if (user?.role === "admin" || user?.mlops_enabled) items.push(["mlops", "MLOps", "chart"]); if (user?.role === "admin") items.push(["admin", "مدیریت کاربران", "user"]); return items; }, [user]);
-  const pageTitle = active === "dashboard" ? "داشبورد" : active === "chat" ? "گفتگو" : active === "keys" ? "کلیدهای API" : active === "usage" ? "مصرف و Usage" : active === "account" ? "حساب کاربری" : active === "admin" ? "مدیریت کاربران" : "MLOps";
+  const sidebar = useMemo(() => { const items: any[] = [["dashboard", "داشبورد", "home"]]; if (user?.role === "admin" || user?.chat_enabled) items.push(["chat", "چت", "chat"]); if (user?.role === "admin" || user?.api_enabled) items.push(["keys", "کلیدهای API", "key"]); items.push(["usage", "مصرف و Usage", "chart"], ["account", "حساب کاربری", "user"]); if (user?.role === "admin" || user?.mlops_enabled) items.push(["mlops", "MLOps", "chart"]); if (user?.role === "admin") items.push(["admin", "مدیریت کاربران", "user"]); if (user?.role === "admin") items.push(["admin_usage", "مصرف API کاربران", "chart"]); return items; }, [user]);
+  const pageTitle = active === "dashboard" ? "داشبورد" : active === "chat" ? "گفتگو" : active === "keys" ? "کلیدهای API" : active === "usage" ? "مصرف و Usage" : active === "account" ? "حساب کاربری" : active === "admin" ? "مدیریت کاربران" : active === "admin_usage" ? "مصرف API کاربران" : "MLOps";
   if (loading) return <div className="boot"><div className="brand-mark">T</div><div>در حال راه‌اندازی پنل…</div></div>;
   if (!user) return <Auth mode={authMode} setMode={setAuthMode} submit={submitAuth} error={formError} />;
   if (forcePasswordChange) return <ChangePassword user={user} onChange={changePassword} onLogout={logout} error={formError} />;
@@ -261,7 +271,7 @@ export default function Portal() {
       </div>
     )}
     <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={async () => { if (id === "mlops") { try { const gate = await api("/mlops/access"); window.open(gate.url, "_blank", "noopener,noreferrer"); } catch (err: any) { setFormError(err.message); } } else { setActive(id); } }}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
-    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><button className="icon-btn" aria-label="تغییر تم" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"}/></button><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}</section>
+    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><label className="theme-select-wrap"><span>استایل</span><select className="theme-select" value={theme} aria-label="انتخاب استایل پنل" onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="dark">Graphite · تیره</option><option value="light">Light · روشن</option><option value="midnight">Midnight · شبانه</option><option value="ocean">Ocean · اقیانوسی</option><option value="glass">Glass · شیشه‌ای</option><option value="paper">Paper · کاغذی</option></select></label><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}{active === "admin_usage" && user.role === "admin" && <AdminApiBudgets notify={notify} />} </section>
     {keyModal && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کلید API</h3><button onClick={() => setKeyModal(false)}>×</button></div><form className="form-stack" onSubmit={createKey}><label>نام کلید<input name="alias" required placeholder="Production App" /></label><label>مدل<input value={selectedModel} readOnly /></label><label>محدودیت RPM<input name="rpm" type="number" defaultValue={30} min={1} /></label><label>انقضا<select name="duration" defaultValue="30d"><option value="30d">۳۰ روز</option><option value="90d">۹۰ روز</option><option value="365d">۱ سال</option><option value="">بدون انقضا</option></select></label>{formError && <div className="error-box">{formError}</div>}<button className="primary" type="submit">ایجاد کلید</button></form></div></div>}
   </main>;
 }
@@ -297,6 +307,122 @@ function ChangePassword({ user, onChange, onLogout, error }: any) {
   </section></main>;
 }
 
+
+function AdminApiBudgets({ notify }: any) {
+  const [users, setUsers] = useState<any[]>([]);
+  const [selectedUser, setSelectedUser] = useState("");
+  const [keys, setKeys] = useState<any[]>([]);
+  const [draft, setDraft] = useState<Record<string, { max_budget: string; budget_duration: string }>>({});
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [loadingKeys, setLoadingKeys] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const unwrapRows = (value: any, keys: string[]) => {
+    if (Array.isArray(value)) return value;
+    for (const k of keys) if (Array.isArray(value?.[k])) return value[k];
+    return [];
+  };
+
+  const loadUsers = async () => {
+    setLoadingUsers(true); setError("");
+    try {
+      const result = await api("/admin/users");
+      const rows = unwrapRows(result, ["data", "users"]);
+      setUsers(rows);
+      if (!selectedUser && rows[0]?.id) setSelectedUser(rows[0].id);
+      else if (selectedUser && !rows.some((u: any) => u.id === selectedUser)) setSelectedUser(rows[0]?.id || "");
+    } catch (err: any) {
+      setError(err?.message || "خطا در دریافت کاربران");
+    } finally { setLoadingUsers(false); }
+  };
+
+  const loadKeys = async (userId: string) => {
+    if (!userId) { setKeys([]); return; }
+    setLoadingKeys(true); setError("");
+    try {
+      const result = await api(`/admin/users/${userId}/api-keys`);
+      const rows = unwrapRows(result, ["data", "keys"]);
+      setKeys(rows);
+      setDraft((old) => {
+        const next = { ...old };
+        for (const k of rows) {
+          next[k.id] = {
+            max_budget: k.max_budget != null ? String(k.max_budget) : "",
+            budget_duration: k.budget_duration || "30d",
+          };
+        }
+        return next;
+      });
+    } catch (err: any) {
+      setError(err?.message || "خطا در دریافت کلیدهای API"); setKeys([]);
+    } finally { setLoadingKeys(false); }
+  };
+
+  useEffect(() => { loadUsers(); }, []);
+  useEffect(() => { loadKeys(selectedUser); }, [selectedUser]);
+
+  const save = async (key: any) => {
+    const d = draft[key.id] || { max_budget: "", budget_duration: "30d" };
+    const amount = Number(d.max_budget);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError("سقف مصرف باید بیشتر از صفر باشد");
+      return;
+    }
+    setSaving(key.id); setError("");
+    try {
+      const result = await api(`/admin/api-keys/${key.id}/budget`, {
+        method: "POST",
+        body: JSON.stringify({ max_budget: amount, budget_duration: d.budget_duration || "30d" }),
+      });
+      const updated = result?.data ?? result;
+      setKeys((rows) => rows.map((row) => row.id === key.id ? { ...row, ...updated } : row));
+      notify?.("سقف مصرف API با موفقیت ذخیره شد");
+    } catch (err: any) {
+      setError(err?.message || "ذخیره سقف مصرف ناموفق بود");
+    } finally { setSaving(null); }
+  };
+
+  const selected = users.find((u: any) => u.id === selectedUser);
+
+  return <div className="content admin-api-budgets">
+    <div className="page-intro">
+      <div><div className="eyebrow">API GOVERNANCE</div><h1>مدیریت مصرف API کاربران</h1><p>سقف مصرف و دوره بودجه هر API Key را از اینجا تعیین کنید. اعداد مصرف از LiteLLM خوانده می‌شوند.</p></div>
+      <button type="button" className="secondary" onClick={() => { loadUsers(); loadKeys(selectedUser); }}>بازخوانی</button>
+    </div>
+
+    {error && <div className="error-box">{error}</div>}
+
+    <div className="panel admin-budget-panel">
+      <div className="admin-budget-toolbar">
+        <label>کاربر
+          <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} disabled={loadingUsers}>
+            <option value="">انتخاب کاربر</option>
+            {users.map((u: any) => <option key={u.id} value={u.id}>{u.name} — {u.email}</option>)}
+          </select>
+        </label>
+        {selected && <div className="admin-budget-user-summary"><b>{selected.name}</b><span>{selected.email}</span></div>}
+      </div>
+
+      {loadingUsers || loadingKeys ? <div className="empty-card">در حال دریافت اطلاعات…</div> : !selectedUser ? <div className="empty-card">کاربری برای مدیریت انتخاب نشده است.</div> : keys.length === 0 ? <div className="empty-card"><h3>کلید API ندارد</h3><p>برای این کاربر هنوز API Key فعالی ثبت نشده است.</p></div> : <div className="admin-budget-table-wrap">
+        <div className="admin-budget-table-head"><span>کلید</span><span>مصرف فعلی</span><span>سقف</span><span>دوره</span><span></span></div>
+        {keys.map((k: any) => {
+          const d = draft[k.id] || { max_budget: k.max_budget != null ? String(k.max_budget) : "", budget_duration: k.budget_duration || "30d" };
+          return <div className="admin-budget-row" key={k.id}>
+            <div><b>{k.alias}</b><small>{k.masked}</small></div>
+            <div className="admin-budget-spend">${Number(k.spend || 0).toFixed(4)}{k.max_budget != null ? ` / $${Number(k.max_budget).toFixed(2)}` : " / بدون سقف"}</div>
+            <input aria-label={`سقف مصرف ${k.alias}`} type="number" min="0.01" step="0.01" value={d.max_budget} onChange={(e) => setDraft((v) => ({ ...v, [k.id]: { ...d, max_budget: e.target.value } }))} />
+            <select aria-label={`دوره بودجه ${k.alias}`} value={d.budget_duration} onChange={(e) => setDraft((v) => ({ ...v, [k.id]: { ...d, budget_duration: e.target.value } }))}>
+              <option value="1d">روزانه</option><option value="7d">هفتگی</option><option value="30d">ماهانه</option>
+            </select>
+            <button type="button" className="primary" onClick={() => save(k)} disabled={saving === k.id}>{saving === k.id ? "در حال ذخیره…" : "ذخیره"}</button>
+          </div>;
+        })}
+      </div>}
+    </div>
+  </div>;
+}
+
 function AdminUsers({ notify }: any) {
   const [users, setUsers] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
@@ -330,6 +456,22 @@ function AdminUsers({ notify }: any) {
     } catch (err: any) { setError(err.message || "خطا در ایجاد کاربر"); }
   };
 
+  const [userKeys, setUserKeys] = useState<Record<string, any[]>>({});
+  const [loadingKeys, setLoadingKeys] = useState<string | null>(null);
+  const [budgetDraft, setBudgetDraft] = useState<Record<string, {max_budget: string; budget_duration: string}>>({});
+  const loadUserKeys = async (id: string) => {
+    setLoadingKeys(id); setError("");
+    try { const result = await api(`/admin/users/${id}/api-keys`); const items = result.data || []; setUserKeys((v) => ({...v, [id]: items})); const next = {...budgetDraft}; items.forEach((k: any) => { next[k.id] = { max_budget: k.max_budget != null ? String(k.max_budget) : "", budget_duration: k.budget_duration || "30d" }; }); setBudgetDraft(next); }
+    catch (err: any) { setError(err.message || "خطا در دریافت کلیدها"); }
+    finally { setLoadingKeys(null); }
+  };
+  const saveBudget = async (key: any) => {
+    const draft = budgetDraft[key.id];
+    const amount = Number(draft?.max_budget);
+    if (!Number.isFinite(amount) || amount <= 0) { setError("سقف مصرف باید بیشتر از صفر باشد"); return; }
+    try { const result = await api(`/admin/api-keys/${key.id}/budget`, { method: "POST", body: JSON.stringify({ max_budget: amount, budget_duration: draft.budget_duration || "30d" }) }); setUserKeys((v) => ({...v, [key._userId]: (v[key._userId] || []).map((x: any) => x.id === key.id ? result.data : x)})); notify("سقف مصرف کلید به‌روزرسانی شد"); await loadUserKeys(key._userId); }
+    catch (err: any) { setError(err.message || "خطا در تنظیم سقف مصرف"); }
+  };
   const statusLabel: Record<string,string> = { pending: "در انتظار", active: "فعال", disabled: "غیرفعال", rejected: "رد شده" };
   return <div className="content">
     <div className="page-intro"><div><div className="eyebrow">ADMIN CENTER</div><h1>مدیریت کاربران</h1><p>تأیید ثبت‌نام، تغییر وضعیت، نقش و سه دسترسی مستقل سرویس‌ها.</p></div><button className="primary" onClick={() => setShowCreate(true)}><Icon name="plus"/>ساخت کاربر</button></div>
@@ -554,7 +696,8 @@ function Usage({ keys, data }: any) {
           <div className="usage-list">
             {rows.map((k: any) => {
               const spend = Number(k.spend || 0);
-              const width = Math.max(2, (spend / maxSpend) * 100);
+              const budget = k.max_budget != null ? Number(k.max_budget) : null;
+              const width = budget && budget > 0 ? Math.min(100, (spend / budget) * 100) : Math.max(2, (spend / maxSpend) * 100);
 
               return (
                 <div className="usage-item" key={k.id}>
@@ -604,19 +747,25 @@ function Account({ user, theme, setTheme }: any) {
         </section>
 
         <section className="info-card">
-          <div className="setting-row">
-            <div>
-              <span className="eyebrow">APPEARANCE</span>
-              <h3>ظاهر پنل</h3>
-              <p>حالت نمایش موردنظر خود را انتخاب کنید.</p>
-            </div>
-            <button
-              className="secondary"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            >
-              <Icon name={theme === "dark" ? "sun" : "moon"} />
-              {theme === "dark" ? "حالت روشن" : "حالت تیره"}
-            </button>
+          <div>
+            <span className="eyebrow">APPEARANCE</span>
+            <h3>استایل پنل</h3>
+            <p>یکی از پوسته‌های آماده TaHa را انتخاب کنید.</p>
+          </div>
+          <div className="theme-preset-grid">
+            {[
+              ["dark", "Graphite", "تیره کلاسیک"],
+              ["light", "Light", "روشن"],
+              ["midnight", "Midnight", "شبانه آبی"],
+              ["ocean", "Ocean", "آبی عمیق"],
+              ["glass", "Glass", "شیشه‌ای"],
+              ["paper", "Paper", "کاغذی گرم"],
+            ].map(([id, label, desc]) => (
+              <button key={id} type="button" className={`theme-preset ${theme === id ? "selected" : ""}`} onClick={() => setTheme(id as typeof theme)}>
+                <span className={`theme-swatch ${id}`} />
+                <span><b>{label}</b><small>{desc}</small></span>
+              </button>
+            ))}
           </div>
         </section>
 
