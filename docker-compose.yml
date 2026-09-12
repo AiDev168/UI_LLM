@@ -50,6 +50,8 @@ services:
       - backend
     ports:
       - "3100:3000"
+    volumes:
+      - ./mlops-videos:/app/public/mlops-videos:ro
     networks:
       - hinaa
 

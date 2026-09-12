@@ -15,7 +15,8 @@ type User = {
 };
 type Model = { id: string };
 type Key = { id: string; alias: string; masked: string; models: string[]; rpm_limit: number | null; spend: number; max_budget?: number | null; remaining_budget?: number | null; budget_duration?: string | null; budget_reset_at?: string | null; status: string; expires_at?: string | null };
-type Msg = { role: "user" | "assistant"; content: string; id?: string };
+type Attachment = { id: string; name: string; mime: string; size: number; parts: any[] };
+type Msg = { role: "user" | "assistant"; content: string; id?: string; attachments?: { name: string; mime: string }[] };
 type Conversation = { id: string; title: string; model: string; updated_at: string };
 
 async function api(path: string, init: RequestInit = {}) {
@@ -90,14 +91,7 @@ export default function Portal() {
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [loading, setLoading] = useState(true);
-  const [active, setActive] = useState("dashboard");
-  const forcePageReset = () => {
-    requestAnimationFrame(() => {
-      const el = document.querySelector(".main-panel") as HTMLElement | null;
-      if (el) el.scrollTo({ top: 0, behavior: "auto" });
-      window.scrollTo({ top: 0, behavior: "auto" });
-    });
-  };
+  const [active, setActive] = useState("chat");
 
   const [models, setModels] = useState<Model[]>([]);
   const [keys, setKeys] = useState<Key[]>([]);
@@ -107,7 +101,7 @@ export default function Portal() {
   const [historyAvailable, setHistoryAvailable] = useState(true);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState("");  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
   const [sending, setSending] = useState(false);
@@ -121,11 +115,83 @@ export default function Portal() {
     setToast({ message, type });
     window.setTimeout(() => setToast(null), 2800);
   };
-  const [theme, setTheme] = useState<"dark" | "light" | "midnight" | "glass" | "paper" | "ocean">("dark");
-  const abortRef = useRef<AbortController | null>(null);
+  const [theme, setTheme] = useState<"dark" | "light" | "midnight" | "ocean" | "glass" | "paper">("dark");
+  useEffect(() => {
+    const saved = window.localStorage.getItem("hinaa-theme");
+    if (saved && ["dark","light","midnight","ocean","glass","paper"].includes(saved)) {
+      setTheme(saved as typeof theme);
+    }
+  }, []);
 
-  useEffect(() => { const saved = window.localStorage.getItem("hinaa-theme") as typeof theme | null; if (saved) setTheme(saved); }, []);
-  useEffect(() => { document.documentElement.dataset.theme = theme; window.localStorage.setItem("hinaa-theme", theme); }, [theme]);
+  useEffect(() => {
+    const root = document.documentElement;
+    const themes: Record<string, Record<string, string>> = {
+      dark:      { bg:"#101010", panel:"#171717", text:"#f5f5f5", muted:"#929292", line:"#2b2b2b", accent:"#eaeaea", danger:"#ff6868", success:"#67d69e" },
+      light:     { bg:"#f5f6f8", panel:"#ffffff", text:"#16181d", muted:"#68707d", line:"#d9dce2", accent:"#17191e", danger:"#c43e4d", success:"#2f855a" },
+      midnight: { bg:"#080d1a", panel:"#0f172a", text:"#edf3ff", muted:"#8da1c0", line:"#1f2c45", accent:"#7dd3fc", danger:"#ff7777", success:"#67e8b0" },
+      ocean:    { bg:"#07151a", panel:"#0d2329", text:"#edfafa", muted:"#8eb8bf", line:"#1b3b43", accent:"#5eead4", danger:"#ff8585", success:"#6ee7b7" },
+      glass:    { bg:"#090b10", panel:"rgba(26,31,42,.68)", text:"#f4f6fb", muted:"#a6adbd", line:"rgba(255,255,255,.11)", accent:"#c4b5fd", danger:"#ff8585", success:"#86efac" },
+      paper:    { bg:"#f5f1e8", panel:"#fffdf8", text:"#24221e", muted:"#746e63", line:"#ddd5c7", accent:"#b08a5a", danger:"#b84a56", success:"#4c8a68" },
+    };
+    const t = themes[theme] || themes.dark;
+    root.dataset.theme = theme;
+    root.style.setProperty("--bg", t.bg);
+    root.style.setProperty("--panel", t.panel);
+    root.style.setProperty("--text", t.text);
+    root.style.setProperty("--muted", t.muted);
+    root.style.setProperty("--line", t.line);
+    root.style.setProperty("--accent", t.accent);
+    root.style.setProperty("--danger", t.danger);
+    root.style.setProperty("--success", t.success);
+    root.style.setProperty("--surface", t.panel);
+    root.style.setProperty("--surface-2", theme === "light" ? "#f0f1f4" : t.panel);
+    root.style.setProperty("--border", t.line);
+    root.style.setProperty("--fg", t.text);
+    root.style.setProperty("--muted-fg", t.muted);
+    root.style.setProperty("--input", theme === "light" || theme === "paper" ? t.panel : t.bg);
+    root.style.setProperty("--button", t.accent);
+    root.style.setProperty("--button-fg", theme === "light" || theme === "paper" ? "#ffffff" : t.bg);
+    window.localStorage.setItem("hinaa-theme", theme);
+  }, [theme]);
+  useEffect(() => {
+    const saved = window.localStorage.getItem("hinaa-theme");
+    if (saved && ["dark","light","midnight","ocean","glass","paper"].includes(saved)) {
+      setTheme(saved as typeof theme);
+    }
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const themes: Record<string, Record<string, string>> = {
+      dark:      { bg:"#101010", panel:"#171717", text:"#f5f5f5", muted:"#929292", line:"#2b2b2b", accent:"#eaeaea", danger:"#ff6868", success:"#67d69e" },
+      light:     { bg:"#f5f6f8", panel:"#ffffff", text:"#16181d", muted:"#68707d", line:"#d9dce2", accent:"#17191e", danger:"#c43e4d", success:"#2f855a" },
+      midnight: { bg:"#080d1a", panel:"#0f172a", text:"#edf3ff", muted:"#8da1c0", line:"#1f2c45", accent:"#7dd3fc", danger:"#ff7777", success:"#67e8b0" },
+      ocean:    { bg:"#07151a", panel:"#0d2329", text:"#edfafa", muted:"#8eb8bf", line:"#1b3b43", accent:"#5eead4", danger:"#ff8585", success:"#6ee7b7" },
+      glass:    { bg:"#090b10", panel:"rgba(26,31,42,.68)", text:"#f4f6fb", muted:"#a6adbd", line:"rgba(255,255,255,.11)", accent:"#c4b5fd", danger:"#ff8585", success:"#86efac" },
+      paper:    { bg:"#f5f1e8", panel:"#fffdf8", text:"#24221e", muted:"#746e63", line:"#ddd5c7", accent:"#b08a5a", danger:"#b84a56", success:"#4c8a68" },
+    };
+    const t = themes[theme] || themes.dark;
+    root.dataset.theme = theme;
+    root.style.setProperty("--bg", t.bg);
+    root.style.setProperty("--panel", t.panel);
+    root.style.setProperty("--text", t.text);
+    root.style.setProperty("--muted", t.muted);
+    root.style.setProperty("--line", t.line);
+    root.style.setProperty("--accent", t.accent);
+    root.style.setProperty("--danger", t.danger);
+    root.style.setProperty("--success", t.success);
+    root.style.setProperty("--surface", t.panel);
+    root.style.setProperty("--surface-2", theme === "light" ? "#f0f1f4" : t.panel);
+    root.style.setProperty("--border", t.line);
+    root.style.setProperty("--fg", t.text);
+    root.style.setProperty("--muted-fg", t.muted);
+    root.style.setProperty("--input", theme === "light" || theme === "paper" ? t.panel : t.bg);
+    root.style.setProperty("--button", t.accent);
+    root.style.setProperty("--button-fg", theme === "light" || theme === "paper" ? "#ffffff" : t.bg);
+    window.localStorage.setItem("hinaa-theme", theme);
+  }, [theme]);
+
+  const abortRef = useRef<AbortController | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -153,7 +219,7 @@ export default function Portal() {
       setModels(modelsResult?.data || []);
       setKeys(keysResult?.data || []);
       setDashboard(dashboardResult);
-      setSelectedModel((current) => current || modelsResult?.data?.[0]?.id || "Qwen3-32B");
+      setSelectedModel((current) => current || modelsResult?.data?.[0]?.id || "Qwen3-VL-30B-A3B-Instruct");
       setConversations(conversationsResult?.data || []);
       setHistoryAvailable(Boolean(conversationsResult));
     } catch {
@@ -164,7 +230,6 @@ export default function Portal() {
     }
   };
   useEffect(() => { load(); }, []);
-  useEffect(() => { forcePageReset(); }, [active]);
   const refreshUsage = async () => {
     try {
       const result = await api("/usage");
@@ -213,36 +278,523 @@ export default function Portal() {
   const ensureConversation = async () => { if (conversationId || !historyAvailable) return conversationId; try { const result = await api("/conversations", { method: "POST", body: JSON.stringify({ model: selectedModel }) }); const id = result.data.id; setConversationId(id); setConversations((items) => [result.data, ...items]); return id; } catch { setHistoryAvailable(false); return null; } };
   const persistMessage = async (id: string | null, role: "user" | "assistant", content: string) => { if (!id || !historyAvailable) return; try { await api(`/conversations/${id}/messages`, { method: "POST", body: JSON.stringify({ role, content }) }); } catch { setHistoryAvailable(false); } };
 
-  const streamChat = async (chatMessages: Msg[], id: string | null, persistAssistant = true) => {
-    const controller = new AbortController(); abortRef.current = controller;
-    const res = await fetch("/api/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ model: selectedModel, messages: chatMessages.map(({ role, content }) => ({ role, content })), stream: true, max_tokens: 1200, enable_thinking: false }) });
-    if (!res.ok || !res.body) throw new Error(await res.text());
-    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let assistantText = "";
-    while (true) {
-      const { value, done } = await reader.read(); if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split("\n\n"); buffer = events.pop() || "";
-      for (const event of events) {
-        const line = event.split("\n").find((l) => l.startsWith("data:")); if (!line) continue;
-        const payload = line.slice(5).trim(); if (!payload || payload === "[DONE]") continue;
-        try { const obj = JSON.parse(payload); const delta = obj.choices?.[0]?.delta?.content || ""; if (delta) { assistantText += delta; setMessages((m) => { const copy = [...m]; copy[copy.length - 1] = { ...copy[copy.length - 1], role: "assistant", content: assistantText }; return copy; }); } } catch {}
+  const streamChat = async (
+    chatMessages: Array<{ role: "user" | "assistant"; content: any }>,
+    id: string | null,
+    persistAssistant = true
+  ) => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    /*
+     * Qwen3-VL-30B-A3B-Instruct is running with:
+     *
+     *   --max-model-len 32768
+     *
+     * We therefore calculate the output budget from the actual
+     * conversation size instead of using an artificial fixed limit.
+     *
+     * The token estimator is intentionally conservative because
+     * Persian text, English text, JSON and multimodal content do
+     * not have the same characters/token ratio.
+     */
+    const CONTEXT_LIMIT = 32768;
+    const SAFETY_RESERVE = 768;
+    const ABSOLUTE_MAX_OUTPUT = 24576;
+
+    const estimateTokens = (value: unknown): number => {
+      if (typeof value === "string") {
+        return Math.max(1, Math.ceil(value.length / 3));
+      }
+
+      if (Array.isArray(value)) {
+        return value.reduce(
+          (total, item) => total + estimateTokens(item),
+          0
+        );
+      }
+
+      if (value && typeof value === "object") {
+        return estimateTokens(JSON.stringify(value));
+      }
+
+      return 0;
+    };
+
+    const estimateMessageTokens = (
+      messages: Array<{ role: string; content: any }>
+    ) => {
+      return messages.reduce((total, message) => {
+        /*
+         * Small allowance for role/message framing tokens.
+         */
+        return (
+          total +
+          8 +
+          estimateTokens(message.role) +
+          estimateTokens(message.content)
+        );
+      }, 0);
+    };
+
+    const calculateMaxTokens = (
+      messages: Array<{ role: string; content: any }>
+    ) => {
+      const inputTokens = estimateMessageTokens(messages);
+
+      const available = Math.max(
+        1,
+        CONTEXT_LIMIT -
+          inputTokens -
+          SAFETY_RESERVE
+      );
+
+      return Math.max(
+        1,
+        Math.min(
+          ABSOLUTE_MAX_OUTPUT,
+          available
+        )
+      );
+    };
+
+    /*
+     * Keep the text visible progressively without forcing a React
+     * render for every tiny SSE fragment. requestAnimationFrame gives
+     * the browser a smooth ChatGPT-like rendering cadence.
+     */
+    let assistantText = "";
+    let pendingRender = false;
+
+    const renderAssistant = () => {
+      if (pendingRender) return;
+
+      pendingRender = true;
+
+      requestAnimationFrame(() => {
+        pendingRender = false;
+
+        setMessages((messages) => {
+          if (!messages.length) {
+            return messages;
+          }
+
+          const copy = [...messages];
+
+          copy[copy.length - 1] = {
+            ...copy[copy.length - 1],
+            role: "assistant",
+            content: assistantText
+          };
+
+          return copy;
+        });
+      });
+    };
+
+    /*
+     * Send one streaming request.
+     *
+     * Returns:
+     *   finishReason = "length" when the model reached its output
+     *   limit and another continuation may be necessary.
+     */
+    const streamRequest = async (
+      messages: Array<{
+        role: "user" | "assistant";
+        content: any;
+      }>
+    ): Promise<{
+      finishReason: string | null;
+    }> => {
+      const maxTokens = calculateMaxTokens(messages);
+
+      const res = await fetch("/api/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: selectedModel,
+          messages,
+          stream: true,
+          max_tokens: maxTokens,
+          enable_thinking: false
+        })
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error(await res.text());
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      let finishReason: string | null = null;
+
+      const processEvent = (event: string) => {
+        const dataLines = event
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith("data:"));
+
+        for (const line of dataLines) {
+          const payload = line.slice(5).trim();
+
+          if (!payload || payload === "[DONE]") {
+            continue;
+          }
+
+          try {
+            const obj = JSON.parse(payload);
+            const choice = obj.choices?.[0];
+
+            if (!choice) {
+              continue;
+            }
+
+            if (choice.finish_reason) {
+              finishReason = choice.finish_reason;
+            }
+
+            const delta = choice.delta?.content;
+
+            if (typeof delta === "string" && delta) {
+              assistantText += delta;
+              renderAssistant();
+            }
+          } catch {
+            /*
+             * An incomplete JSON fragment stays in the SSE buffer
+             * and is parsed when the next network chunk arrives.
+             */
+          }
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, {
+          stream: true
+        });
+
+        /*
+         * Normalize SSE line endings.
+         */
+        buffer = buffer.replace(/\r\n/g, "\n");
+
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+
+        for (const event of events) {
+          processEvent(event);
+        }
+      }
+
+      /*
+       * Flush a final partial UTF-8 sequence.
+       */
+      buffer += decoder.decode();
+
+      if (buffer.trim()) {
+        processEvent(buffer);
+      }
+
+      /*
+       * Make sure the final text is rendered even if the stream
+       * finished between animation frames.
+       */
+      setMessages((messages) => {
+        if (!messages.length) {
+          return messages;
+        }
+
+        const copy = [...messages];
+
+        copy[copy.length - 1] = {
+          ...copy[copy.length - 1],
+          role: "assistant",
+          content: assistantText
+        };
+
+        return copy;
+      });
+
+      return { finishReason };
+    };
+
+    /*
+     * First request uses the complete conversation.
+     */
+    let requestMessages = [...chatMessages];
+
+    const MAX_CONTINUATIONS = 8;
+
+    for (
+      let continuation = 0;
+      continuation <= MAX_CONTINUATIONS;
+      continuation += 1
+    ) {
+      const result = await streamRequest(requestMessages);
+
+      /*
+       * Normal completion.
+       */
+      if (result.finishReason !== "length") {
+        break;
+      }
+
+      /*
+       * The model reached its generation limit.
+       *
+       * We deliberately do not resend the complete conversation
+       * unchanged. Instead, append the generated assistant answer
+       * and a short continuation instruction.
+       *
+       * This prevents the model from restarting the answer.
+       */
+      requestMessages = [
+        ...chatMessages,
+        {
+          role: "assistant",
+          content: assistantText
+        },
+        {
+          role: "user",
+          content:
+            "ادامه پاسخ قبلی را دقیقاً از همان نقطه ادامه بده. " +
+            "مطالب قبلی را تکرار نکن و پاسخ را تا پایان کامل کن."
+        }
+      ];
+
+      /*
+       * Once the assistant response itself becomes large, sending
+       * the entire original conversation again can exceed the model
+       * context. Keep the most recent useful context in that case.
+       */
+      const estimatedContext =
+        estimateMessageTokens(requestMessages);
+
+      if (estimatedContext >= CONTEXT_LIMIT - 1024) {
+        const lastUserMessage =
+          chatMessages[chatMessages.length - 1];
+
+        requestMessages = [
+          lastUserMessage,
+          {
+            role: "assistant",
+            content: assistantText
+          },
+          {
+            role: "user",
+            content:
+              "ادامه پاسخ قبلی را دقیقاً از همان نقطه ادامه بده. " +
+              "مطالب قبلی را تکرار نکن و پاسخ را تا پایان کامل کن."
+          }
+        ];
       }
     }
-    if (persistAssistant && assistantText) await persistMessage(id, "assistant", assistantText);
-    if (historyAvailable && id) { try { const refreshed = await api("/conversations"); setConversations(refreshed.data || []); } catch { setHistoryAvailable(false); } }
+
+    if (pendingRender) {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    }
+
+    if (persistAssistant && assistantText) {
+      await persistMessage(
+        id,
+        "assistant",
+        assistantText
+      );
+    }
+
+    if (historyAvailable && id) {
+      try {
+        const refreshed = await api("/conversations");
+        setConversations(refreshed.data || []);
+      } catch {
+        setHistoryAvailable(false);
+      }
+    }
+
     return assistantText;
   };
 
-  const sendChat = async () => {
-    const text = input.trim(); if (!text || sending || !selectedModel) return;
-    setSending(true); setInput(""); setFormError("");
-    const base = editingIndex === null ? messages : messages.slice(0, editingIndex);
-    const next = [...base, { role: "user" as const, content: text }]; setMessages([...next, { role: "assistant", content: "" }]);
-    const wasEdit = editingIndex !== null; setEditingIndex(null);
-    try { const id = await ensureConversation(); if (id) await persistMessage(id, "user", text); await streamChat(next, id); if (wasEdit && id) setFormError("پیام ویرایش‌شده به‌عنوان درخواست جدید پاسخ داده شد."); }
-    catch (err: any) { if (err?.name === "AbortError") setMessages((m) => m[m.length - 1]?.content ? m : m.slice(0, -1)); else setMessages((m) => { const copy = [...m]; copy[copy.length - 1] = { role: "assistant", content: `خطا: ${err.message}` }; return copy; }); }
-    finally { setSending(false); abortRef.current = null; }
+  const prepareFile = async (file: File): Promise<Attachment> => {
+    const form = new FormData();
+    form.append("file", file);
+
+    const res = await fetch("/api/files/prepare", {
+      method: "POST",
+      body: form
+    });
+
+    const text = await res.text();
+    let data: any = null;
+
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { detail: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(
+        data?.detail ||
+        data?.error?.message ||
+        `HTTP ${res.status}`
+      );
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      name: file.name,
+      mime: file.type || "application/octet-stream",
+      size: file.size,
+      parts: data?.parts || []
+    };
   };
+
+  const addFiles = async (fileList: FileList | null) => {
+    if (!fileList?.length || sending) return;
+
+    setFormError("");
+
+    try {
+      const files = Array.from(fileList);
+      const prepared: Attachment[] = [];
+
+      for (const file of files) {
+        const item = await prepareFile(file);
+        if (!prepared.some((x) => x.name === item.name && x.size === item.size && x.mime === item.mime)) {
+          prepared.push(item);
+        }
+      }
+
+      setAttachments((current) => {
+        const existing = new Set(
+          current.map((x) => `${x.name}|${x.size}|${x.mime}`)
+        );
+
+        return [
+          ...current,
+          ...prepared.filter(
+            (x) => !existing.has(`${x.name}|${x.size}|${x.mime}`)
+          )
+        ];
+      });
+    } catch (err: any) {
+      setFormError(err?.message || "افزودن فایل ناموفق بود");
+    }
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((current) => current.filter((x) => x.id !== id));
+  };
+
+  const sendChat = async () => {
+    const text = input.trim();
+    const pendingAttachments = attachments;
+
+    if ((!text && pendingAttachments.length === 0) || sending || !selectedModel) {
+      return;
+    }
+
+    setSending(true);
+    setInput("");
+    setFormError("");
+
+    const base = editingIndex === null ? messages : messages.slice(0, editingIndex);
+
+    const attachmentSummary = pendingAttachments.map((a) => ({
+      name: a.name,
+      mime: a.mime
+    }));
+
+    const userDisplayText = text;
+    const historyDisplayText =
+      text ||
+      (attachmentSummary.length
+        ? attachmentSummary.map((a) => `📎 ${a.name}`).join("\n")
+        : "فایل پیوست شد");
+
+    const next = [
+      ...base,
+      {
+        role: "user" as const,
+        content: userDisplayText,
+        attachments: attachmentSummary
+      }
+    ];
+
+    setMessages([
+      ...next,
+      { role: "assistant", content: "" }
+    ]);
+
+    const wasEdit = editingIndex !== null;
+    setEditingIndex(null);
+
+    try {
+      const id = await ensureConversation();
+
+      if (id) {
+        await persistMessage(id, "user", historyDisplayText);
+      }
+
+      const modelMessages: Array<{ role: "user" | "assistant"; content: any }> =
+        base.map(({ role, content }) => ({ role, content }));
+
+      const contentParts: any[] = [];
+
+      if (text) {
+        contentParts.push({
+          type: "text",
+          text
+        });
+      }
+
+      for (const attachment of pendingAttachments) {
+        contentParts.push(...attachment.parts);
+      }
+
+      modelMessages.push({
+        role: "user",
+        content: contentParts
+      });
+
+      setAttachments([]);
+      await streamChat(modelMessages, id);
+
+      if (wasEdit && id) {
+        setFormError("پیام ویرایش‌شده به‌عنوان درخواست جدید پاسخ داده شد.");
+      }
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        setMessages((m) => m[m.length - 1]?.content ? m : m.slice(0, -1));
+      } else {
+        setMessages((m) => {
+          const copy = [...m];
+          copy[copy.length - 1] = {
+            role: "assistant",
+            content: `خطا: ${err.message}`
+          };
+          return copy;
+        });
+      }
+    } finally {
+      setSending(false);
+      abortRef.current = null;
+    }
+  };
+
   const regenerate = async (index: number) => {
     if (sending || index < 1 || messages[index]?.role !== "assistant" || messages[index - 1]?.role !== "user") return;
     setSending(true); setFormError(""); const next = messages.slice(0, index); setMessages([...next, { role: "assistant", content: "" }]);
@@ -270,8 +822,8 @@ export default function Portal() {
         <button aria-label="بستن" onClick={() => setToast(null)}>×</button>
       </div>
     )}
-    <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={async () => { if (id === "mlops") { try { const gate = await api("/mlops/access"); window.open(gate.url, "_blank", "noopener,noreferrer"); } catch (err: any) { setFormError(err.message); } } else { setActive(id); } }}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
-    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><label className="theme-select-wrap"><span>استایل</span><select className="theme-select" value={theme} aria-label="انتخاب استایل پنل" onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="dark">Graphite · تیره</option><option value="light">Light · روشن</option><option value="midnight">Midnight · شبانه</option><option value="ocean">Ocean · اقیانوسی</option><option value="glass">Glass · شیشه‌ای</option><option value="paper">Paper · کاغذی</option></select></label><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}{active === "admin_usage" && user.role === "admin" && <AdminApiBudgets notify={notify} />} </section>
+    <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={async () => { if (id === "mlops") { try { await api("/mlops/access"); setActive("mlops"); } catch (err: any) { setFormError(err.message); } } else { setActive(id); } }}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
+    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><label className="theme-select-wrap"><span>استایل</span><select className="theme-select" value={theme} aria-label="انتخاب استایل پنل" onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="dark">Graphite · تیره</option><option value="light">Light · روشن</option><option value="midnight">Midnight · شبانه</option><option value="ocean">Ocean · اقیانوسی</option><option value="glass">Glass · شیشه‌ای</option><option value="paper">Paper · کاغذی</option></select></label><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} attachments={attachments} setAttachments={setAttachments} onAddFiles={addFiles} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} onProfileUpdate={(nextUser: any) => setUser((current: any) => ({ ...current, ...nextUser }))} />}{active === "mlops" && <MLOps />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}{active === "admin_usage" && user.role === "admin" && <AdminApiBudgets notify={notify} />} </section>
     {keyModal && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کلید API</h3><button onClick={() => setKeyModal(false)}>×</button></div><form className="form-stack" onSubmit={createKey}><label>نام کلید<input name="alias" required placeholder="Production App" /></label><label>مدل<input value={selectedModel} readOnly /></label><label>محدودیت RPM<input name="rpm" type="number" defaultValue={30} min={1} /></label><label>انقضا<select name="duration" defaultValue="30d"><option value="30d">۳۰ روز</option><option value="90d">۹۰ روز</option><option value="365d">۱ سال</option><option value="">بدون انقضا</option></select></label>{formError && <div className="error-box">{formError}</div>}<button className="primary" type="submit">ایجاد کلید</button></form></div></div>}
   </main>;
 }
@@ -505,128 +1057,729 @@ function AdminUsers({ notify }: any) {
 }
 
 function Dashboard({ user, data, keys, onChat, onKeys }: any) {
-  const activeKeys = keys.filter((k: Key) => k.status === "active").length;
+  const safeKeys: Key[] = Array.isArray(keys) ? keys : [];
+  const activeKeys = safeKeys.filter((k) => k.status === "active").length;
+  const totalKeys = safeKeys.length;
   const totalSpend = Number(data?.spend || 0);
-  const models = Array.isArray(data?.models) && data.models.length
-    ? data.models
-    : ["Qwen3-32B"];
+  const messageCount = Number(data?.messages || 0);
+
+  const models =
+    Array.isArray(data?.models) && data.models.length
+      ? data.models
+      : ["Qwen3-VL-30B-A3B-Instruct"];
+
+  const activeRatio = totalKeys
+    ? Math.round((activeKeys / totalKeys) * 100)
+    : 0;
+
+  const spendRows = [...safeKeys]
+    .sort((a, b) => Number(b.spend || 0) - Number(a.spend || 0))
+    .slice(0, 6);
+
+  const maxSpend = Math.max(
+    ...spendRows.map((k) => Number(k.spend || 0)),
+    0.000001
+  );
 
   return (
-    <div className="content dashboard-page">
-      <div className="hero dashboard-hero">
+    <div className="content dashboard-page modern-dashboard">
+
+      <div className="modern-dashboard-hero">
         <div>
-          <div className="eyebrow">TAHA AI</div>
+          <div className="eyebrow">TAHA AI PLATFORM</div>
           <h1>سلام {user.name} 👋</h1>
-          <p>مرکز مدیریت سرویس‌های هوش مصنوعی و API شما.</p>
+          <p>مرکز کنترل سرویس هوش مصنوعی و API شما</p>
         </div>
 
-        <button className="primary dashboard-main-action" onClick={onChat}>
+        <button className="primary modern-dashboard-action" onClick={onChat}>
           <Icon name="chat" />
           شروع گفتگو
         </button>
       </div>
 
-      <div className="dashboard-stats">
-        <div className="dashboard-stat">
-          <div className="dashboard-stat-icon"><Icon name="chat" /></div>
-          <div>
+      <div className="modern-stat-grid">
+
+        <div className="modern-stat">
+          <div className="modern-stat-icon">
+            <Icon name="chat" />
+          </div>
+          <div className="modern-stat-body">
             <span>مدل فعال</span>
             <strong>{models[0]}</strong>
-            <small>{models.length} مدل در دسترس</small>
+            <small>Text · Vision · Video</small>
+          </div>
+          <i className="modern-online-dot" />
+        </div>
+
+        <div className="modern-stat">
+          <div className="modern-stat-icon">
+            <Icon name="key" />
+          </div>
+          <div className="modern-stat-body">
+            <span>API Keys</span>
+            <strong>{activeKeys} <em>/ {totalKeys}</em></strong>
+            <small>{activeRatio}% فعال</small>
+          </div>
+          <div className="modern-mini-bar">
+            <i style={{ width: `${activeRatio}%` }} />
           </div>
         </div>
 
-        <div className="dashboard-stat">
-          <div className="dashboard-stat-icon"><Icon name="key" /></div>
-          <div>
-            <span>کلیدهای فعال</span>
-            <strong>{activeKeys}</strong>
-            <small>{keys.length} کلید ثبت‌شده</small>
+        <div className="modern-stat">
+          <div className="modern-stat-icon">
+            <Icon name="chart" />
           </div>
-        </div>
-
-        <div className="dashboard-stat">
-          <div className="dashboard-stat-icon"><Icon name="chart" /></div>
-          <div>
-            <span>هزینه ثبت‌شده</span>
+          <div className="modern-stat-body">
+            <span>مصرف کل</span>
             <strong>${totalSpend.toFixed(4)}</strong>
-            <small>مصرف فعلی سرویس</small>
+            <small>{messageCount ? `${messageCount} پیام` : "مصرف فعلی سرویس"}</small>
           </div>
         </div>
+
       </div>
 
-      <div className="dashboard-grid">
-        <section className="dashboard-card dashboard-overview">
-          <div className="dashboard-card-head">
+      <div className="modern-dashboard-grid">
+
+        <section className="modern-panel health-panel">
+          <div className="modern-panel-head">
             <div>
-              <span className="eyebrow">OVERVIEW</span>
+              <span className="eyebrow">SYSTEM HEALTH</span>
               <h3>وضعیت سرویس</h3>
             </div>
-            <span className="service-badge">
+
+            <span className="modern-online-badge">
               <i />
-              فعال
+              ONLINE
             </span>
           </div>
 
-          <div className="service-row">
-            <div>
-              <b>Qwen3-32B</b>
-              <span>مدل پیش‌فرض پلتفرم TaHa</span>
-            </div>
-            <strong>Ready</strong>
-          </div>
+          <div className="health-content">
 
-          <div className="service-row">
-            <div>
-              <b>API Gateway</b>
-              <span>اتصال امن به LiteLLM</span>
+            <div
+              className="health-circle"
+              style={{
+                background: `conic-gradient(var(--accent) ${activeRatio}%, color-mix(in srgb, var(--line) 60%, transparent) 0)`
+              }}
+            >
+              <div className="health-circle-inner">
+                <strong>{activeRatio}%</strong>
+                <span>API READY</span>
+              </div>
             </div>
-            <strong>Online</strong>
-          </div>
 
-          <div className="service-row">
-            <div>
-              <b>حساب کاربری</b>
-              <span>{user.email}</span>
+            <div className="health-list">
+
+              <div className="health-row">
+                <span className="health-status-dot" />
+                <div>
+                  <b>LiteLLM Gateway</b>
+                  <small>API Gateway</small>
+                </div>
+                <strong>OK</strong>
+              </div>
+
+              <div className="health-row">
+                <span className="health-status-dot" />
+                <div>
+                  <b>Qwen3-VL</b>
+                  <small>30B · Vision Language</small>
+                </div>
+                <strong>READY</strong>
+              </div>
+
+              <div className="health-row">
+                <span className="health-status-dot" />
+                <div>
+                  <b>Multimodal</b>
+                  <small>Image · Video · PDF</small>
+                </div>
+                <strong>ONLINE</strong>
+              </div>
+
             </div>
-            <strong>Active</strong>
           </div>
         </section>
 
-        <section className="dashboard-card">
-          <div className="dashboard-card-head">
+        <section className="modern-panel usage-panel">
+
+          <div className="modern-panel-head">
+            <div>
+              <span className="eyebrow">API USAGE</span>
+              <h3>مصرف کلیدها</h3>
+            </div>
+
+            <button className="modern-text-button" onClick={onKeys}>
+              مدیریت
+            </button>
+          </div>
+
+          {spendRows.length === 0 ? (
+            <div className="modern-empty-chart">
+              <div>
+                <Icon name="chart" />
+              </div>
+              <b>هنوز مصرفی ثبت نشده</b>
+              <span>پس از استفاده از API، نمودار اینجا نمایش داده می‌شود.</span>
+            </div>
+          ) : (
+            <div className="modern-chart">
+              {spendRows.map((k) => {
+                const value = Number(k.spend || 0);
+                const width = Math.max(
+                  5,
+                  Math.round((value / maxSpend) * 100)
+                );
+
+                return (
+                  <div className="modern-chart-row" key={k.id}>
+                    <div className="modern-chart-name">
+                      <b>{k.alias}</b>
+                      <span>{k.masked}</span>
+                    </div>
+
+                    <div className="modern-chart-track">
+                      <i style={{ width: `${width}%` }} />
+                    </div>
+
+                    <strong>${value.toFixed(4)}</strong>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+        </section>
+
+      </div>
+
+      <div className="modern-bottom-grid">
+
+        <section className="modern-panel model-panel">
+
+          <div className="modern-panel-head">
+            <div>
+              <span className="eyebrow">ACTIVE MODEL</span>
+              <h3>مدل هوش مصنوعی</h3>
+            </div>
+
+            <span className="modern-ready">READY</span>
+          </div>
+
+          <div className="model-stage">
+            <div className="model-orbit orbit-a" />
+            <div className="model-orbit orbit-b" />
+            <div className="model-orbit-dot dot-a" />
+            <div className="model-orbit-dot dot-b" />
+            <div className="model-core">VL</div>
+          </div>
+
+          <div className="model-caption">
+            <b>{models[0]}</b>
+            <span>متن · تصویر · ویدئو · PDF</span>
+          </div>
+
+        </section>
+
+        <section className="modern-panel actions-panel">
+
+          <div className="modern-panel-head">
             <div>
               <span className="eyebrow">QUICK ACTIONS</span>
               <h3>دسترسی سریع</h3>
             </div>
           </div>
 
-          <div className="dashboard-actions">
+          <div className="modern-actions">
+
             <button onClick={onChat}>
-              <Icon name="chat" />
+              <div className="modern-action-icon">
+                <Icon name="chat" />
+              </div>
               <div>
                 <b>گفتگوی جدید</b>
-                <span>شروع یک مکالمه با مدل</span>
+                <span>شروع مکالمه با مدل</span>
               </div>
             </button>
 
             <button onClick={onKeys}>
-              <Icon name="key" />
+              <div className="modern-action-icon">
+                <Icon name="key" />
+              </div>
               <div>
-                <b>مدیریت API Key</b>
-                <span>ایجاد، چرخش و لغو کلیدها</span>
+                <b>API Keys</b>
+                <span>مدیریت کلیدهای دسترسی</span>
               </div>
             </button>
+
           </div>
         </section>
+
       </div>
+
     </div>
   );
 }
 
 function Stat({ title, value }: { title: string; value: string | number }) { return <div className="stat"><small>{title}</small><strong>{value}</strong><span>وضعیت فعلی</span></div>; }
-function Chat({ selectedModel, setSelectedModel, models, messages, input, setInput, sendChat, sending, onNew, onStop, editingIndex, cancelEdit, onEdit, onRegenerate, historyAvailable }: any) { const end = useRef<HTMLDivElement>(null); useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]); return <div className="chat-view"><div className="chat-head"><div><h3>{messages.length ? "گفتگو" : "گفتگوی جدید"}</h3><span>{historyAvailable ? "گفتگو و تاریخچه شما در پنل ذخیره می‌شود." : "پاسخ‌ها توسط مدل انتخاب‌شده تولید می‌شوند."}</span></div><div className="chat-tools"><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select><button className="secondary" onClick={onNew}>گفتگوی جدید</button></div></div>{editingIndex !== null && <div className="edit-banner">در حال ویرایش پیام <button onClick={cancelEdit}>لغو</button></div>}<div className="messages">{messages.length === 0 ? <div className="empty-chat"><div className="brand-mark large">T</div><h2>چطور می‌توانم کمک کنم؟</h2><p>سؤال خود را بنویسید یا یکی از نمونه‌ها را انتخاب کنید.</p><div className="suggestions"><button onClick={() => setInput("یک متن حرفه‌ای برای معرفی محصول بنویس")}>معرفی محصول</button><button onClick={() => setInput("این کد را بررسی و بهینه کن")}>بررسی کد</button><button onClick={() => setInput("یک برنامه کاری هفتگی پیشنهاد بده")}>برنامه‌ریزی</button></div></div> : messages.map((m: Msg, i: number) => <div key={m.id || i} className={`message ${m.role}`}><div className="bubble-wrap"><div className="bubble">{m.role === "assistant" ? <Markdown text={m.content || (sending && i === messages.length - 1 ? "در حال تولید پاسخ…" : "")}/> : <div className="user-text">{m.content}</div>}</div><div className="message-actions">{m.role === "user" && <button onClick={() => onEdit(i)} disabled={sending}><Icon name="edit"/>ویرایش</button>}{m.role === "assistant" && <button onClick={() => onRegenerate(i)} disabled={sending}><Icon name="refresh"/>پاسخ دوباره</button>}{m.content && <button onClick={() => navigator.clipboard?.writeText(m.content)}><Icon name="copy"/>کپی</button>}</div></div></div>)}<div ref={end}/></div><div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } }} placeholder="پیام خود را بنویسید…"/><div className="composer-actions">{sending ? <button className="stop-btn" onClick={onStop}><Icon name="stop"/>توقف</button> : <button className="send-btn-inline" onClick={sendChat} disabled={!input.trim() || !selectedModel}><Icon name="send"/></button>}</div><div className="composer-hint">Enter برای ارسال · Shift+Enter برای خط جدید{historyAvailable ? " · ذخیره خودکار تاریخچه" : ""}</div></div></div>; }
-function Keys({ keys, models, selectedModel, setSelectedModel, deleteKey, rotateKey, openModal, newKey, setNewKey, notify }: any) { return <div className="content"><div className="page-intro"><div><div className="eyebrow">API CENTER</div><h1>کلیدهای API</h1><p>کلیدهای دسترسی خود را مدیریت کنید و هر کلید را به مدل‌های مجاز محدود کنید.</p></div><button className="primary" onClick={openModal}><Icon name="plus"/>ساخت کلید جدید</button></div><div className="toolbar"><label>مدل پیش‌فرض برای کلید جدید<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{models.map((m: Model) => <option key={m.id} value={m.id}>{m.id}</option>)}</select></label></div>{newKey && <div className="reveal"><div><b>کلید جدید ایجاد شد</b><p>این مقدار را همین حالا کپی و در محل امن نگهداری کنید.</p><code>{newKey.key}</code></div><button onClick={() => navigator.clipboard?.writeText(newKey.key).then(() => notify("کلید API کپی شد"))}><Icon name="copy"/>کپی</button><button onClick={() => setNewKey(null)}>×</button></div>}<div className="key-grid">{keys.map((k: Key) => <div className="key-card" key={k.id}><div className="key-top"><div className="key-icon"><Icon name="key"/></div><div><b>{k.alias}</b><small>{k.masked}</small></div><span className={`pill ${k.status}`}>{k.status === "active" ? "فعال" : "لغو شده"}</span></div><div className="key-meta"><div><small>مدل</small><strong>{k.models.join("، ")}</strong></div><div><small>RPM</small><strong>{k.rpm_limit ?? "—"}</strong></div><div><small>مصرف</small><strong>${Number(k.spend || 0).toFixed(4)}</strong></div></div><div className="key-actions"><button onClick={() => rotateKey(k.id)} disabled={k.status !== "active"}><Icon name="refresh"/>چرخش</button><button className="danger" onClick={() => deleteKey(k.id)} disabled={k.status !== "active"}><Icon name="trash"/>لغو کلید</button></div></div>)}</div>{keys.length === 0 && <div className="empty-card"><h3>هنوز کلیدی ندارید</h3><p>اولین کلید API خود را بسازید.</p><button className="primary" onClick={openModal}>ساخت اولین کلید</button></div>}</div>; }
+function Chat({
+  selectedModel,
+  setSelectedModel,
+  models,
+  messages,
+  input,
+  setInput,
+  sendChat,
+  sending,
+  onNew,
+  onStop,
+  editingIndex,
+  cancelEdit,
+  onEdit,
+  onRegenerate,
+  historyAvailable,
+  attachments,
+  setAttachments,
+  onAddFiles
+}: any) {
+  const end = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  return (
+    <div className="chat-view">
+      <div className="chat-head">
+        <div>
+          <h3>{messages.length ? "گفتگو" : "گفتگوی جدید"}</h3>
+          <span>
+            {historyAvailable
+              ? "گفتگو و تاریخچه شما در پنل ذخیره می‌شود."
+              : "پاسخ‌ها توسط مدل انتخاب‌شده تولید می‌شوند."}
+          </span>
+        </div>
+
+        <div className="chat-tools">
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+          >
+            {models.map((m: Model) => (
+              <option key={m.id} value={m.id}>{m.id}</option>
+            ))}
+          </select>
+
+          <button className="secondary" onClick={onNew}>
+            گفتگوی جدید
+          </button>
+        </div>
+      </div>
+
+      {editingIndex !== null && (
+        <div className="edit-banner">
+          در حال ویرایش پیام
+          <button onClick={cancelEdit}>لغو</button>
+        </div>
+      )}
+
+      <div className="messages">
+        {messages.length === 0 ? (
+          <div className="empty-chat">
+            <div className="brand-mark large">T</div>
+            <h2>چطور می‌توانم کمک کنم؟</h2>
+            <p>سؤال خود را بنویسید یا فایل و تصویر خود را پیوست کنید.</p>
+
+            <div className="suggestions">
+              <button onClick={() => setInput("یک متن حرفه‌ای برای معرفی محصول بنویس")}>
+                معرفی محصول
+              </button>
+              <button onClick={() => setInput("این کد را بررسی و بهینه کن")}>
+                بررسی کد
+              </button>
+              <button onClick={() => setInput("یک برنامه کاری هفتگی پیشنهاد بده")}>
+                برنامه‌ریزی
+              </button>
+            </div>
+          </div>
+        ) : (
+          messages.map((m: Msg, i: number) => (
+            <div
+              key={m.id || i}
+              className={`message ${m.role}`}
+            >
+              <div className="bubble-wrap">
+                <div className="bubble">
+                  {m.role === "assistant" ? (
+                    <Markdown
+                      text={
+                        m.content ||
+                        (sending && i === messages.length - 1
+                          ? "در حال تولید پاسخ…"
+                          : "")
+                      }
+                    />
+                  ) : (
+                    <>
+                      {m.attachments?.length > 0 && (
+                        <div className="message-attachments">
+                          {m.attachments.map((a) => (
+                            <span
+                              className="attachment-chip"
+                              key={`${a.name}-${a.mime}`}
+                              title={a.mime}
+                            >
+                              📎 {a.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {m.content}
+                    </>
+                  )}
+                </div>
+
+                <div className="message-actions">
+                  {m.role === "user" && (
+                    <button onClick={() => onEdit(i)} disabled={sending}>
+                      <Icon name="edit"/>ویرایش
+                    </button>
+                  )}
+
+                  {m.role === "assistant" && (
+                    <button onClick={() => onRegenerate(i)} disabled={sending}>
+                      <Icon name="refresh"/>پاسخ دوباره
+                    </button>
+                  )}
+
+                  {m.content && (
+                    <button onClick={() => navigator.clipboard?.writeText(m.content)}>
+                      <Icon name="copy"/>کپی
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+
+        <div ref={end}/>
+      </div>
+
+      {attachments.length > 0 && (
+        <div className="attachment-list">
+          {attachments.map((a: Attachment) => (
+            <div className="attachment-item" key={a.id}>
+              <span title={a.mime}>📎 {a.name}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setAttachments((current: Attachment[]) =>
+                    current.filter((x) => x.id !== a.id)
+                  )
+                }
+                aria-label={`حذف ${a.name}`}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="composer">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          accept={[
+            "image/*",
+            "video/*",
+            "application/pdf",
+            "text/*",
+            ".txt",
+            ".md",
+            ".markdown",
+            ".json",
+            ".csv",
+            ".tsv",
+            ".log",
+            ".py",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".html",
+            ".css",
+            ".scss",
+            ".xml",
+            ".yaml",
+            ".yml",
+            ".ini",
+            ".conf",
+            ".sh",
+            ".bash",
+            ".sql",
+            ".toml",
+            ".env"
+          ].join(",")}
+          onChange={(e) => {
+            const files = e.target.files;
+            if (files?.length && !sending) {
+              void onAddFiles(files);
+            }
+            e.currentTarget.value = "";
+          }}
+        />
+
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (!sending) sendChat();
+            }
+          }}
+          placeholder="پیام خود را بنویسید یا فایل پیوست کنید…"
+        />
+
+        <div className="composer-actions">
+          {!sending && (
+            <button
+              type="button"
+              className="secondary attach-btn"
+              onClick={() => fileInputRef.current?.click()}
+              title="افزودن فایل"
+              aria-label="افزودن فایل"
+            >
+              📎
+            </button>
+          )}
+
+          {sending ? (
+            <button className="stop-btn" onClick={onStop}>
+              <Icon name="stop"/>توقف
+            </button>
+          ) : (
+            <button
+              className="send-btn-inline"
+              onClick={sendChat}
+              disabled={
+                (!input.trim() && attachments.length === 0) ||
+                !selectedModel
+              }
+            >
+              <Icon name="send"/>
+            </button>
+          )}
+        </div>
+
+        <div className="composer-hint">
+          Enter برای ارسال · Shift+Enter برای خط جدید · 📎 تصویر، ویدئو، PDF و فایل متنی
+          {historyAvailable ? " · ذخیره خودکار تاریخچه" : ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Keys({ keys, models, selectedModel, setSelectedModel, deleteKey, rotateKey, openModal, newKey, setNewKey, notify }: any) {
+  return (
+    <div className="content keys-page">
+      <div className="page-intro keys-hero">
+        <div>
+          <div className="eyebrow">API CENTER</div>
+          <h1>کلیدهای API</h1>
+          <p>کلیدهای دسترسی خود را مدیریت کنید.</p>
+        </div>
+        <button className="primary" onClick={openModal}>
+          <Icon name="plus"/> ساخت کلید جدید
+        </button>
+      </div>
+
+      <div className="keys-toolbar">
+        <div className="keys-toolbar-label">
+          <span>مدل پیش‌فرض</span>
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            aria-label="مدل پیش‌فرض برای کلید جدید"
+          >
+            {models.map((m: Model) => (
+              <option key={m.id} value={m.id}>{m.id}</option>
+            ))}
+          </select>
+        </div>
+        <div className="keys-count">
+          <Icon name="key"/>
+          <span>{keys.length} کلید</span>
+        </div>
+      </div>
+
+      {newKey && (
+        <section className="key-reveal">
+          <div className="key-reveal-main">
+            <div className="key-reveal-badge">
+              <Icon name="key"/>
+            </div>
+            <div>
+              <strong>کلید جدید ایجاد شد</strong>
+              <p>این مقدار فقط همین حالا قابل مشاهده است.</p>
+            </div>
+          </div>
+
+          <code className="key-reveal-secret">{newKey.key}</code>
+
+          <div className="key-reveal-actions">
+            <button
+              className="key-button"
+              onClick={() =>
+                navigator.clipboard?.writeText(newKey.key).then(() => notify("کلید API کپی شد"))
+              }
+            >
+              <Icon name="copy"/> کپی
+            </button>
+            <button className="key-icon-button" onClick={() => setNewKey(null)} aria-label="بستن">
+              ×
+            </button>
+          </div>
+        </section>
+      )}
+
+      {keys.length > 0 ? (
+        <div className="key-grid-modern">
+          {keys.map((k: Key) => {
+            const kk: any = k;
+            const spend = Number(kk.spend || 0);
+            const budget = kk.max_budget != null ? Number(kk.max_budget) : null;
+            const remaining = budget != null ? Math.max(0, budget - spend) : null;
+            const usagePercent = budget && budget > 0
+              ? Math.min(100, Math.max(0, (spend / budget) * 100))
+              : 0;
+            const modelLabel = Array.isArray(kk.models) && kk.models.length
+              ? kk.models.join("، ")
+              : "—";
+
+            return (
+              <article
+                className="key-card-modern"
+                key={kk.id}
+                data-status={kk.status}
+              >
+                <div className="key-card-header">
+                  <div className="key-card-identity">
+                    <div className="key-card-icon">
+                      <Icon name="key"/>
+                    </div>
+                    <div className="key-card-title">
+                      <strong>{kk.alias}</strong>
+                      <span>{kk.masked}</span>
+                    </div>
+                  </div>
+
+                  <span className={`key-status ${kk.status === "active" ? "active" : "revoked"}`}>
+                    <i/>
+                    {kk.status === "active" ? "فعال" : "لغو شده"}
+                  </span>
+                </div>
+
+                <div className="key-secret-box">
+                  <div>
+                    <span>کلید</span>
+                    <code>{kk.masked}</code>
+                  </div>
+                  <span className="key-secret-lock">•••</span>
+                </div>
+
+                <div className="key-metrics">
+                  <div className="key-metric">
+                    <span>مدل</span>
+                    <strong title={modelLabel}>{modelLabel}</strong>
+                  </div>
+                  <div className="key-metric">
+                    <span>RPM</span>
+                    <strong>{kk.rpm_limit ?? "—"}</strong>
+                  </div>
+                  <div className="key-metric">
+                    <span>مصرف</span>
+                    <strong>${spend.toFixed(4)}</strong>
+                  </div>
+                </div>
+
+                <div className="key-budget">
+                  <div className="key-budget-head">
+                    <span>بودجه</span>
+                    {budget != null ? (
+                      <strong>
+                        ${remaining!.toFixed(2)} باقی‌مانده
+                      </strong>
+                    ) : (
+                      <strong>بدون سقف</strong>
+                    )}
+                  </div>
+
+                  {budget != null && (
+                    <>
+                      <div className="key-progress">
+                        <i style={{ width: `${usagePercent}%` }}/>
+                      </div>
+                      <div className="key-budget-foot">
+                        <span>مصرف ${spend.toFixed(2)}</span>
+                        <span>سقف ${budget.toFixed(2)}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="key-card-footer">
+                  <div className="key-details">
+                    {kk.budget_duration && <span>{kk.budget_duration}</span>}
+                    {kk.expires_at && (
+                      <span>
+                        انقضا: {new Date(kk.expires_at).toLocaleDateString("fa-IR")}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="key-actions-modern">
+                    <button
+                      className="key-button"
+                      onClick={() => rotateKey(kk.id)}
+                      disabled={kk.status !== "active"}
+                    >
+                      <Icon name="refresh"/> چرخش
+                    </button>
+                    <button
+                      className="key-button danger"
+                      onClick={() => deleteKey(kk.id)}
+                      disabled={kk.status !== "active"}
+                    >
+                      <Icon name="trash"/> لغو
+                    </button>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="key-empty-modern">
+          <div className="key-empty-icon">
+            <Icon name="key"/>
+          </div>
+          <h3>هنوز کلیدی ندارید</h3>
+          <p>اولین API Key خود را ایجاد کنید.</p>
+          <button className="primary" onClick={openModal}>
+            <Icon name="plus"/> ساخت اولین کلید
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Usage({ keys, data }: any) {
   const rows = Array.isArray(data?.keys) ? data.keys : keys;
   const activeKeys = keys.filter((k: Key) => k.status === "active").length;
@@ -724,34 +1877,460 @@ function Usage({ keys, data }: any) {
   );
 }
 
-function Account({ user, theme, setTheme }: any) {
+
+function MLOps() {
+  const fallbackVideos = [
+    { id: 1, title: "آموزش MLOps — جلسه ۱", file: "01.mp4" },
+    { id: 2, title: "آموزش MLOps — جلسه ۲", file: "02.mp4" },
+    { id: 3, title: "آموزش MLOps — جلسه ۳", file: "03.mp4" },
+    { id: 4, title: "آموزش MLOps — جلسه ۴", file: "04.mp4" },
+    { id: 5, title: "آموزش MLOps — جلسه ۵", file: "05.mp4" },
+    { id: 6, title: "آموزش MLOps — جلسه ۶", file: "06.mp4" },
+    { id: 7, title: "آموزش MLOps — جلسه ۷", file: "07.mp4" },
+    { id: 8, title: "آموزش MLOps — جلسه ۸", file: "08.mp4" },
+    { id: 9, title: "آموزش MLOps — جلسه ۹", file: "09.mp4" },
+    { id: 10, title: "آموزش MLOps — جلسه ۱۰", file: "10.mp4" },
+    { id: 11, title: "آموزش MLOps — جلسه ۱۱", file: "11.mp4" },
+  ];
+
+  const [section, setSection] = useState<"videos" | "clearml">("videos");
+  const [videos, setVideos] = useState(fallbackVideos);
+  const [selected, setSelected] = useState(0);
+  const [clearmlUrl, setClearmlUrl] = useState("https://app.hinaa.ir");
+  const [clearmlBusy, setClearmlBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+
+    fetch("/mlops-videos/videos.json", { cache: "no-store" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error("manifest unavailable");
+        return res.json();
+      })
+      .then((data) => {
+        if (!mounted || !Array.isArray(data) || data.length === 0) return;
+        const valid = data.filter(
+          (v: any) =>
+            v &&
+            typeof v.file === "string" &&
+            v.file.trim() &&
+            typeof v.title === "string" &&
+            v.title.trim()
+        );
+        if (valid.length > 0) {
+          setVideos(valid);
+          setSelected(0);
+        }
+      })
+      .catch(() => {
+        // Fallback list remains available.
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const current = videos[selected] || videos[0];
+
+  const openClearML = async () => {
+    setClearmlBusy(true);
+    setError("");
+
+    try {
+      const gate = await api("/mlops/access");
+      if (gate?.url) setClearmlUrl(gate.url);
+      window.open(gate?.url || "https://app.hinaa.ir", "_blank", "noopener,noreferrer");
+    } catch (err: any) {
+      setError(err.message || "دسترسی به ClearML امکان‌پذیر نیست");
+    } finally {
+      setClearmlBusy(false);
+    }
+  };
+
+  return (
+    <div className="content mlops-page">
+      <div className="page-intro">
+        <div>
+          <div className="eyebrow">MLOPS</div>
+          <h1>مدیریت و آموزش MLOps</h1>
+          <p>آموزش‌های ویدئویی و دسترسی به پنل ClearML در یک بخش یکپارچه.</p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="global-notice">
+          <span>{error}</span>
+          <button onClick={() => setError("")}>×</button>
+        </div>
+      )}
+
+      <div className="mlops-tabs">
+        <button
+          type="button"
+          className={`mlops-tab ${section === "videos" ? "active" : ""}`}
+          onClick={() => setSection("videos")}
+        >
+          <span className="mlops-tab-icon">▶</span>
+          <span>
+            <b>فیلم‌های آموزشی</b>
+            <small>{videos.length} آموزش</small>
+          </span>
+        </button>
+
+        <button
+          type="button"
+          className={`mlops-tab ${section === "clearml" ? "active" : ""}`}
+          onClick={() => setSection("clearml")}
+        >
+          <span className="mlops-tab-icon">⚙</span>
+          <span>
+            <b>پنل ClearML</b>
+            <small>مدیریت پروژه‌های MLOps</small>
+          </span>
+        </button>
+      </div>
+
+      {section === "videos" && (
+        <div className="mlops-video-layout">
+          <section className="info-card mlops-player-card">
+            {current ? (
+              <>
+                <div className="mlops-player-head">
+                  <div>
+                    <span className="eyebrow">TRAINING VIDEO</span>
+                    <h3>{current.title}</h3>
+                  </div>
+
+                  <a
+                    className="secondary mlops-download"
+                    href={`/mlops-video/${encodeURIComponent(current.file)}?download=1`}
+                    download
+                  >
+                    دانلود ویدئو
+                  </a>
+                </div>
+
+                <div className="mlops-player">
+                  <video
+                    key={current.file}
+                    controls
+                    preload="metadata"
+                    playsInline
+                    src={`/mlops-video/${encodeURIComponent(current.file)}`}
+                  >
+                    مرورگر شما از پخش ویدئو پشتیبانی نمی‌کند.
+                  </video>
+                </div>
+
+                <div className="mlops-player-foot">
+                  <span>درس {String(current.id).padStart(2, "0")}</span>
+                  <span>پخش مستقیم از سرور TaHa</span>
+                </div>
+              </>
+            ) : (
+              <div className="empty-card">ویدئویی برای نمایش وجود ندارد.</div>
+            )}
+          </section>
+
+          <aside className="info-card mlops-video-list">
+            <div className="mlops-list-head">
+              <div>
+                <span className="eyebrow">LESSONS</span>
+                <h3>فهرست فیلم‌ها</h3>
+              </div>
+              <span className="pill">{videos.length}</span>
+            </div>
+
+            <div className="mlops-video-items">
+              {videos.map((video: any, index: number) => (
+                <button
+                  key={`${video.file}-${index}`}
+                  type="button"
+                  className={`mlops-video-item ${selected === index ? "selected" : ""}`}
+                  onClick={() => setSelected(index)}
+                >
+                  <span className="mlops-video-number">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <span className="mlops-video-title">{video.title}</span>
+                </button>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {section === "clearml" && (
+        <section className="info-card mlops-clearml-card">
+          <div className="mlops-clearml-mark">C</div>
+
+          <div className="mlops-clearml-body">
+            <span className="eyebrow">CLEARML PLATFORM</span>
+            <h2>پنل ClearML</h2>
+            <p>
+              محیط مدیریت پروژه‌ها، Experimentها، Taskها، مدل‌ها و سرویس‌های
+              MLOps از همین بخش در دسترس است.
+            </p>
+
+            <div className="mlops-clearml-meta">
+              <div>
+                <span>سرویس</span>
+                <b>ClearML</b>
+              </div>
+
+              <div>
+                <span>نشانی</span>
+                <b>{clearmlUrl}</b>
+              </div>
+
+              <div>
+                <span>وضعیت</span>
+                <b>محافظت‌شده</b>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="primary mlops-clearml-button"
+              onClick={openClearML}
+              disabled={clearmlBusy}
+            >
+              {clearmlBusy ? "در حال بررسی دسترسی…" : "ورود به پنل ClearML"}
+            </button>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function Account({ user, theme, setTheme, onProfileUpdate }: any) {
+  const [name, setName] = useState(String(user?.name || ""));
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  const [accountSuccess, setAccountSuccess] = useState("");
+
+  const avatarLetter = (name.trim() || user?.email || "T").charAt(0).toUpperCase();
+
+  const saveProfile = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setAccountError("");
+    setAccountSuccess("");
+
+    const cleanName = name.trim();
+
+    if (cleanName.length < 2) {
+      setAccountError("نام باید حداقل ۲ کاراکتر باشد");
+      return;
+    }
+
+    setProfileBusy(true);
+
+    try {
+      const result = await api("/auth/profile", {
+        method: "PATCH",
+        body: JSON.stringify({ name: cleanName }),
+      });
+
+      setName(cleanName);
+
+      if (result?.user) {
+        onProfileUpdate?.(result.user);
+      } else {
+        onProfileUpdate?.({ name: cleanName });
+      }
+
+      setAccountSuccess("اطلاعات پروفایل با موفقیت ذخیره شد");
+    } catch (err: any) {
+      setAccountError(err.message || "ذخیره پروفایل ناموفق بود");
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const savePassword = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setAccountError("");
+    setAccountSuccess("");
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      setAccountError("همه فیلدهای رمز عبور را تکمیل کنید");
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      setAccountError("رمز عبور جدید باید حداقل ۸ کاراکتر باشد");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setAccountError("تکرار رمز عبور یکسان نیست");
+      return;
+    }
+
+    setPasswordBusy(true);
+
+    try {
+      await api("/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+      });
+
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setAccountSuccess("رمز عبور با موفقیت تغییر کرد");
+    } catch (err: any) {
+      setAccountError(err.message || "تغییر رمز عبور ناموفق بود");
+    } finally {
+      setPasswordBusy(false);
+    }
+  };
+
   return (
     <div className="content account-page">
       <div className="page-intro">
         <div>
           <div className="eyebrow">ACCOUNT</div>
           <h1>حساب کاربری</h1>
-          <p>اطلاعات حساب و ترجیحات پنل TaHa را مدیریت کنید.</p>
+          <p>اطلاعات حساب، امنیت و ترجیحات پنل TaHa را مدیریت کنید.</p>
         </div>
       </div>
 
+      {(accountError || accountSuccess) && (
+        <div className={`account-message ${accountError ? "error" : "success"}`}>
+          {accountError || accountSuccess}
+        </div>
+      )}
+
       <div className="account-grid">
-        <section className="profile-card account-profile">
-          <div className="avatar huge">T</div>
-          <div>
-            <span className="eyebrow">PROFILE</span>
-            <h3>{user.name}</h3>
-            <p>{user.email}</p>
-            <span className="pill active">کاربر فعال</span>
+
+        <section className="profile-card account-card account-profile-edit">
+          <div className="account-card-title">
+            <div className="avatar huge">{avatarLetter}</div>
+            <div>
+              <span className="eyebrow">PROFILE</span>
+              <h3>پروفایل کاربری</h3>
+              <p>اطلاعات نمایشی حساب خود را ویرایش کنید.</p>
+            </div>
           </div>
+
+          <form className="account-form" onSubmit={saveProfile}>
+            <label>
+              نام
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                minLength={2}
+                maxLength={120}
+                autoComplete="name"
+                required
+              />
+            </label>
+
+            <label>
+              ایمیل
+              <input
+                value={user?.email || ""}
+                type="email"
+                readOnly
+              />
+            </label>
+
+            <div className="account-meta-grid">
+              <div>
+                <span>نقش</span>
+                <b>{user?.role === "admin" ? "مدیر" : "کاربر"}</b>
+              </div>
+
+              <div>
+                <span>وضعیت</span>
+                <b>{user?.status === "active" ? "فعال" : (user?.status || "—")}</b>
+              </div>
+            </div>
+
+            <button
+              className="primary"
+              type="submit"
+              disabled={profileBusy}
+            >
+              {profileBusy ? "در حال ذخیره…" : "ذخیره تغییرات پروفایل"}
+            </button>
+          </form>
         </section>
 
-        <section className="info-card">
+        <section className="info-card account-card account-security-card">
+          <div className="account-card-title">
+            <div>
+              <div className="eyebrow">SECURITY</div>
+              <h3>امنیت حساب</h3>
+              <p>رمز عبور حساب خود را تغییر دهید.</p>
+            </div>
+          </div>
+
+          <form className="account-form" onSubmit={savePassword}>
+            <label>
+              رمز عبور فعلی
+              <input
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                type="password"
+                autoComplete="current-password"
+                required
+              />
+            </label>
+
+            <label>
+              رمز عبور جدید
+              <input
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                placeholder="حداقل ۸ کاراکتر"
+                required
+              />
+            </label>
+
+            <label>
+              تکرار رمز عبور جدید
+              <input
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                required
+              />
+            </label>
+
+            <button
+              className="primary"
+              type="submit"
+              disabled={passwordBusy}
+            >
+              {passwordBusy ? "در حال تغییر…" : "تغییر رمز عبور"}
+            </button>
+          </form>
+        </section>
+
+        <section className="info-card account-card account-appearance-card">
           <div>
             <span className="eyebrow">APPEARANCE</span>
             <h3>استایل پنل</h3>
             <p>یکی از پوسته‌های آماده TaHa را انتخاب کنید.</p>
           </div>
+
           <div className="theme-preset-grid">
             {[
               ["dark", "Graphite", "تیره کلاسیک"],
@@ -761,32 +2340,22 @@ function Account({ user, theme, setTheme }: any) {
               ["glass", "Glass", "شیشه‌ای"],
               ["paper", "Paper", "کاغذی گرم"],
             ].map(([id, label, desc]) => (
-              <button key={id} type="button" className={`theme-preset ${theme === id ? "selected" : ""}`} onClick={() => setTheme(id as typeof theme)}>
+              <button
+                key={id}
+                type="button"
+                className={`theme-preset ${theme === id ? "selected" : ""}`}
+                onClick={() => setTheme(id as typeof theme)}
+              >
                 <span className={`theme-swatch ${id}`} />
-                <span><b>{label}</b><small>{desc}</small></span>
+                <span>
+                  <b>{label}</b>
+                  <small>{desc}</small>
+                </span>
               </button>
             ))}
           </div>
         </section>
 
-        <section className="info-card account-security-card">
-          <div className="eyebrow">SECURITY</div>
-          <h3>امنیت حساب</h3>
-          <div className="security-item">
-            <div>
-              <b>نشست فعلی</b>
-              <span>احراز هویت با نشست امن مرورگر انجام می‌شود.</span>
-            </div>
-            <span className="service-badge"><i /> فعال</span>
-          </div>
-          <div className="security-item">
-            <div>
-              <b>API Master Key</b>
-              <span>اطلاعات مدیریتی LiteLLM هرگز در مرورگر قرار نمی‌گیرد.</span>
-            </div>
-            <span className="service-badge"><i /> محافظت‌شده</span>
-          </div>
-        </section>
       </div>
     </div>
   );

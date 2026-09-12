@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import mimetypes
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 
+import fitz
 import httpx
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from cryptography.fernet import Fernet
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -512,7 +515,7 @@ class KeyCreateIn(BaseModel):
         max_length=120,
     )
     models: list[str] = Field(
-        default_factory=lambda: ["Qwen3-32B"]
+        default_factory=lambda: ["Qwen3-VL-30B-A3B-Instruct"]
     )
     rpm_limit: int | None = Field(
         default=settings.default_rpm_limit,
@@ -745,6 +748,200 @@ def require_permission(permission: str):
     return dependency
 
 
+MULTIMODAL_MAX_IMAGE = 20 * 1024 * 1024
+MULTIMODAL_MAX_VIDEO = 50 * 1024 * 1024
+MULTIMODAL_MAX_PDF = 25 * 1024 * 1024
+MULTIMODAL_MAX_TEXT = 5 * 1024 * 1024
+MULTIMODAL_MAX_PDF_PAGES = 8
+
+
+def _data_url(data: bytes, mime: str) -> str:
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+@app.post(
+    "/files/prepare",
+    dependencies=[Depends(require_permission("chat"))],
+)
+async def prepare_file(
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    filename = file.filename or "file"
+    lower = filename.lower()
+    mime = (
+        file.content_type
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
+
+    data = await file.read()
+    size = len(data)
+
+    if mime.startswith("image/"):
+        if size > MULTIMODAL_MAX_IMAGE:
+            raise HTTPException(
+                status_code=413,
+                detail="حجم تصویر نباید بیشتر از ۲۰ مگابایت باشد.",
+            )
+
+        return {
+            "filename": filename,
+            "mime": mime,
+            "parts": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": _data_url(data, mime)
+                    },
+                }
+            ],
+        }
+
+    if mime.startswith("video/"):
+        if size > MULTIMODAL_MAX_VIDEO:
+            raise HTTPException(
+                status_code=413,
+                detail="حجم ویدئو نباید بیشتر از ۵۰ مگابایت باشد.",
+            )
+
+        return {
+            "filename": filename,
+            "mime": mime,
+            "parts": [
+                {
+                    "type": "video_url",
+                    "video_url": {
+                        "url": _data_url(data, mime)
+                    },
+                }
+            ],
+        }
+
+    if mime == "application/pdf" or lower.endswith(".pdf"):
+        if size > MULTIMODAL_MAX_PDF:
+            raise HTTPException(
+                status_code=413,
+                detail="حجم PDF نباید بیشتر از ۲۵ مگابایت باشد.",
+            )
+
+        document = None
+
+        try:
+            document = fitz.open(stream=data, filetype="pdf")
+            total_pages = len(document)
+
+            parts: list[dict[str, Any]] = [
+                {
+                    "type": "text",
+                    "text": (
+                        f"فایل PDF با نام «{filename}» پیوست شده است. "
+                        f"صفحات و متن استخراج‌شده را بررسی کن."
+                    ),
+                }
+            ]
+
+            pages_to_process = min(
+                total_pages,
+                MULTIMODAL_MAX_PDF_PAGES,
+            )
+
+            for index in range(pages_to_process):
+                page = document.load_page(index)
+
+                text = page.get_text("text").strip()
+                if text:
+                    parts.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                f"--- متن صفحه {index + 1} ---\n"
+                                f"{text[:120000]}"
+                            ),
+                        }
+                    )
+
+                pix = page.get_pixmap(
+                    matrix=fitz.Matrix(1.5, 1.5),
+                    alpha=False,
+                )
+
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": _data_url(
+                                pix.tobytes("png"),
+                                "image/png",
+                            )
+                        },
+                    }
+                )
+
+            if total_pages > MULTIMODAL_MAX_PDF_PAGES:
+                parts.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f"فقط {MULTIMODAL_MAX_PDF_PAGES} صفحه اول "
+                            f"از {total_pages} صفحه ارسال شده است."
+                        ),
+                    }
+                )
+
+            return {
+                "filename": filename,
+                "mime": "application/pdf",
+                "parts": parts,
+            }
+
+        except Exception as exc:
+            raise HTTPException(
+                status_code=415,
+                detail=f"خواندن PDF ناموفق بود: {exc}",
+            ) from exc
+
+        finally:
+            if document is not None:
+                document.close()
+
+    text_extensions = {
+        ".txt", ".md", ".markdown", ".json", ".csv", ".tsv",
+        ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
+        ".html", ".css", ".scss", ".xml", ".yaml", ".yml",
+        ".ini", ".conf", ".sh", ".bash", ".sql", ".toml", ".env",
+    }
+
+    if mime.startswith("text/") or Path(lower).suffix in text_extensions:
+        if size > MULTIMODAL_MAX_TEXT:
+            raise HTTPException(
+                status_code=413,
+                detail="حجم فایل متنی نباید بیشتر از ۵ مگابایت باشد.",
+            )
+
+        text = data.decode("utf-8", errors="replace")
+
+        return {
+            "filename": filename,
+            "mime": mime,
+            "parts": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"فایل متنی «{filename}» پیوست شده است.\n\n"
+                        f"--- BEGIN FILE ---\n{text}\n--- END FILE ---"
+                    ),
+                }
+            ],
+        }
+
+    raise HTTPException(
+        status_code=415,
+        detail="فرمت‌های مجاز: تصویر، ویدئو، PDF و فایل‌های متنی/کد.",
+    )
+
+
+
 def require_not_forced_change(
     user: User = Depends(get_current_user),
 ) -> User:
@@ -754,6 +951,42 @@ def require_not_forced_change(
             "ابتدا باید رمز عبور خود را تغییر دهید",
         )
     return user
+
+
+@app.patch("/auth/profile")
+def update_profile(
+    payload: dict[str, Any],
+    current_user: User = Depends(require_not_forced_change),
+) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()
+
+    if len(name) < 2:
+        raise HTTPException(400, "نام باید حداقل ۲ کاراکتر باشد")
+
+    if len(name) > 120:
+        raise HTTPException(400, "نام بیش از حد طولانی است")
+
+    with db() as session:
+        user = session.get(User, current_user.id)
+
+        if not user:
+            raise HTTPException(401, "کاربر پیدا نشد")
+
+        user.name = name
+        session.commit()
+        session.refresh(user)
+
+        return {
+            "ok": True,
+            "message": "پروفایل با موفقیت به‌روزرسانی شد",
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role,
+                "status": user.status,
+            },
+        }
 
 
 @app.post("/auth/change-password")
@@ -1089,7 +1322,7 @@ async def create_key(
     payload: KeyCreateIn,
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    models = payload.models or ["Qwen3-32B"]
+    models = payload.models or ["Qwen3-VL-30B-A3B-Instruct"]
 
     body: dict[str, Any] = {
         "key_alias": (
@@ -1223,7 +1456,7 @@ async def rotate_key(
 
         models = (
             json.loads(old.models_json or "[]")
-            or ["Qwen3-32B"]
+            or ["Qwen3-VL-30B-A3B-Instruct"]
         )
 
         try:
@@ -1720,4 +1953,9 @@ async def chat(
     return StreamingResponse(
         proxy_stream(token, body),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )

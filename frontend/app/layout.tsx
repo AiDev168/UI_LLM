@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./portal.css";
+import "./modern-ui.css";
 
 export const metadata: Metadata = {
   title: "TaHa | هوش مصنوعی",

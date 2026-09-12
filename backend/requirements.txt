@@ -10,3 +10,5 @@ httpx>=0.28,<1
 python-multipart>=0.0.20,<1
 
 alembic>=1.16,<2
+
+PyMuPDF>=1.26,<2
