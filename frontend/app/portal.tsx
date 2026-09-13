@@ -14,6 +14,13 @@ type User = {
   must_change_password: boolean;
 };
 type Model = { id: string };
+
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  "Qwen3-VL-30B-A3B-Instruct": "TaHa1_VL",
+};
+
+const getModelDisplayName = (modelId: string): string =>
+  MODEL_DISPLAY_NAMES[modelId] || modelId;
 type Key = { id: string; alias: string; masked: string; models: string[]; rpm_limit: number | null; spend: number; max_budget?: number | null; remaining_budget?: number | null; budget_duration?: string | null; budget_reset_at?: string | null; status: string; expires_at?: string | null };
 type Attachment = { id: string; name: string; mime: string; size: number; parts: any[] };
 type Msg = { role: "user" | "assistant"; content: string; id?: string; attachments?: { name: string; mime: string }[] };
@@ -315,7 +322,35 @@ export default function Portal() {
       }
 
       if (value && typeof value === "object") {
-        return estimateTokens(JSON.stringify(value));
+        const item = value as Record<string, unknown>;
+
+        // IMPORTANT: media URLs contain base64 data. Their byte length is
+        // NOT their model-token count. Counting the raw data URL here can
+        // make a single image look like millions of tokens and reduce
+        // max_tokens to 1, which breaks multimodal answers.
+        if (item.type === "image_url" && item.image_url) {
+          return 4096;
+        }
+
+        if (item.type === "video_url" && item.video_url) {
+          return 8192;
+        }
+
+        if (item.type === "text" && typeof item.text === "string") {
+          return Math.max(1, Math.ceil(item.text.length / 3));
+        }
+
+        return Object.entries(item).reduce(
+          (total, [key, child]) =>
+            total + (
+              key === "url" &&
+              typeof child === "string" &&
+              child.startsWith("data:")
+                ? 0
+                : estimateTokens(child)
+            ),
+          0
+        );
       }
 
       return 0;
@@ -530,75 +565,24 @@ export default function Portal() {
     };
 
     /*
-     * First request uses the complete conversation.
+     * Send exactly one streaming request.
+     *
+     * Automatic multi-request continuation is intentionally disabled.
+     * Re-sending a generated assistant response as a new prompt can
+     * cause repetition/degeneration with Qwen3-VL, especially when
+     * the response reaches the context boundary.
+     *
+     * The request already receives the largest safe output budget
+     * calculated from the current conversation.
      */
-    let requestMessages = [...chatMessages];
+    const result = await streamRequest(chatMessages);
 
-    const MAX_CONTINUATIONS = 8;
-
-    for (
-      let continuation = 0;
-      continuation <= MAX_CONTINUATIONS;
-      continuation += 1
-    ) {
-      const result = await streamRequest(requestMessages);
-
+    if (result.finishReason === "length") {
       /*
-       * Normal completion.
+       * The model reached the safe generation boundary.
+       * Keep the generated answer as-is instead of starting a
+       * continuation loop that can corrupt the response.
        */
-      if (result.finishReason !== "length") {
-        break;
-      }
-
-      /*
-       * The model reached its generation limit.
-       *
-       * We deliberately do not resend the complete conversation
-       * unchanged. Instead, append the generated assistant answer
-       * and a short continuation instruction.
-       *
-       * This prevents the model from restarting the answer.
-       */
-      requestMessages = [
-        ...chatMessages,
-        {
-          role: "assistant",
-          content: assistantText
-        },
-        {
-          role: "user",
-          content:
-            "ادامه پاسخ قبلی را دقیقاً از همان نقطه ادامه بده. " +
-            "مطالب قبلی را تکرار نکن و پاسخ را تا پایان کامل کن."
-        }
-      ];
-
-      /*
-       * Once the assistant response itself becomes large, sending
-       * the entire original conversation again can exceed the model
-       * context. Keep the most recent useful context in that case.
-       */
-      const estimatedContext =
-        estimateMessageTokens(requestMessages);
-
-      if (estimatedContext >= CONTEXT_LIMIT - 1024) {
-        const lastUserMessage =
-          chatMessages[chatMessages.length - 1];
-
-        requestMessages = [
-          lastUserMessage,
-          {
-            role: "assistant",
-            content: assistantText
-          },
-          {
-            role: "user",
-            content:
-              "ادامه پاسخ قبلی را دقیقاً از همان نقطه ادامه بده. " +
-              "مطالب قبلی را تکرار نکن و پاسخ را تا پایان کامل کن."
-          }
-        ];
-      }
     }
 
     if (pendingRender) {
@@ -669,9 +653,18 @@ export default function Portal() {
 
     try {
       const files = Array.from(fileList);
+
+      if (!files.length) {
+        return;
+      }
+
       const prepared: Attachment[] = [];
 
       for (const file of files) {
+        if (file.size === 0) {
+          throw new Error(`فایل «${file.name}» خالی است.`);
+        }
+
         const item = await prepareFile(file);
         if (!prepared.some((x) => x.name === item.name && x.size === item.size && x.mime === item.mime)) {
           prepared.push(item);
@@ -823,7 +816,7 @@ export default function Portal() {
       </div>
     )}
     <aside className="sidebar"><div className="brand-lockup side-brand"><div className="brand-mark">T</div><div><b>TaHa</b><span>AI Platform</span></div></div><button className="new-chat" onClick={newConversation}><Icon name="plus"/>گفتگوی جدید</button><nav>{sidebar.map(([id, label, icon]) => <button key={id} className={active === id ? "nav-item active" : "nav-item"} onClick={async () => { if (id === "mlops") { try { await api("/mlops/access"); setActive("mlops"); } catch (err: any) { setFormError(err.message); } } else { setActive(id); } }}><Icon name={icon}/><span>{label}</span></button>)}</nav><div className="history-panel"><div className="history-head"><div className="history-title">گفتگوهای اخیر</div>{historyAvailable && <span>{conversations.length}</span>}</div>{historyAvailable ? conversations.slice(0, 8).map((c) => <div className={`history-item ${conversationId === c.id ? "selected" : ""}`} key={c.id}><button onClick={() => openConversation(c.id)}>{c.title || "گفتگوی بدون عنوان"}</button><button className="history-delete" aria-label="حذف گفتگو" onClick={() => deleteConversation(c.id)}>×</button></div>) : <small>تاریخچه در API فعلی در دسترس نیست.</small>}{historyAvailable && conversations.length === 0 && <small>هنوز گفتگویی ندارید.</small>}</div><div className="sidebar-bottom"><div className="mini-user"><div className="avatar">{user.name.slice(0,1)}</div><div><b>{user.name}</b><small>{user.email}</small></div></div><button className="logout" aria-label="خروج" onClick={logout}><Icon name="logout"/></button></div></aside>
-    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><label className="theme-select-wrap"><span>استایل</span><select className="theme-select" value={theme} aria-label="انتخاب استایل پنل" onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="dark">Graphite · تیره</option><option value="light">Light · روشن</option><option value="midnight">Midnight · شبانه</option><option value="ocean">Ocean · اقیانوسی</option><option value="glass">Glass · شیشه‌ای</option><option value="paper">Paper · کاغذی</option></select></label><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} attachments={attachments} setAttachments={setAttachments} onAddFiles={addFiles} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} onProfileUpdate={(nextUser: any) => setUser((current: any) => ({ ...current, ...nextUser }))} />}{active === "mlops" && <MLOps />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}{active === "admin_usage" && user.role === "admin" && <AdminApiBudgets notify={notify} />} </section>
+    <section className="main-panel"><header className="topbar"><div><span className="crumb">پنل کاربری</span><h2>{pageTitle}</h2></div><div className="top-actions"><label className="theme-select-wrap"><span>استایل</span><select className="theme-select" value={theme} aria-label="انتخاب استایل پنل" onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="dark">Graphite · تیره</option><option value="light">Light · روشن</option><option value="midnight">Midnight · شبانه</option><option value="ocean">Ocean · اقیانوسی</option><option value="glass">Glass · شیشه‌ای</option><option value="paper">Paper · کاغذی</option></select></label><div className="status"><i/> سرویس فعال</div></div></header>{formError && active !== "chat" && <div className="global-notice">{formError}<button onClick={() => setFormError("")}>×</button></div>}{active === "dashboard" && <Dashboard user={user} data={dashboard} keys={keys} onChat={newConversation} onKeys={() => setActive("keys")} />}{active === "chat" && <Chat selectedModel={selectedModel} setSelectedModel={setSelectedModel} models={models} messages={messages} input={input} setInput={setInput} sendChat={sendChat} sending={sending} onNew={newConversation} onStop={stopGeneration} editingIndex={editingIndex} cancelEdit={() => { setEditingIndex(null); setInput(""); }} onEdit={editMessage} onRegenerate={regenerate} historyAvailable={historyAvailable} attachments={attachments} setAttachments={setAttachments} onAddFiles={addFiles} formError={formError} setFormError={setFormError} />}{active === "keys" && <Keys keys={keys} models={models} selectedModel={selectedModel} setSelectedModel={setSelectedModel} deleteKey={deleteKey} rotateKey={rotateKey} openModal={() => setKeyModal(true)} newKey={newKey} setNewKey={setNewKey} notify={notify} />}{active === "usage" && <Usage keys={keys} data={usage} />}{active === "account" && <Account user={user} theme={theme} setTheme={setTheme} onProfileUpdate={(nextUser: any) => setUser((current: any) => ({ ...current, ...nextUser }))} />}{active === "mlops" && <MLOps />}{active === "admin" && user.role === "admin" && <AdminUsers notify={notify} />}{active === "admin_usage" && user.role === "admin" && <AdminApiBudgets notify={notify} />} </section>
     {keyModal && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>ساخت کلید API</h3><button onClick={() => setKeyModal(false)}>×</button></div><form className="form-stack" onSubmit={createKey}><label>نام کلید<input name="alias" required placeholder="Production App" /></label><label>مدل<input value={selectedModel} readOnly /></label><label>محدودیت RPM<input name="rpm" type="number" defaultValue={30} min={1} /></label><label>انقضا<select name="duration" defaultValue="30d"><option value="30d">۳۰ روز</option><option value="90d">۹۰ روز</option><option value="365d">۱ سال</option><option value="">بدون انقضا</option></select></label>{formError && <div className="error-box">{formError}</div>}<button className="primary" type="submit">ایجاد کلید</button></form></div></div>}
   </main>;
 }
@@ -1066,7 +1059,7 @@ function Dashboard({ user, data, keys, onChat, onKeys }: any) {
   const models =
     Array.isArray(data?.models) && data.models.length
       ? data.models
-      : ["Qwen3-VL-30B-A3B-Instruct"];
+      : ["TaHa1_VL"];
 
   const activeRatio = totalKeys
     ? Math.round((activeKeys / totalKeys) * 100)
@@ -1181,7 +1174,7 @@ function Dashboard({ user, data, keys, onChat, onKeys }: any) {
               <div className="health-row">
                 <span className="health-status-dot" />
                 <div>
-                  <b>Qwen3-VL</b>
+                  <b>TaHa1_VL</b>
                   <small>30B · Vision Language</small>
                 </div>
                 <strong>READY</strong>
@@ -1274,7 +1267,7 @@ function Dashboard({ user, data, keys, onChat, onKeys }: any) {
           </div>
 
           <div className="model-caption">
-            <b>{models[0]}</b>
+            <b>{getModelDisplayName(models[0])}</b>
             <span>متن · تصویر · ویدئو · PDF</span>
           </div>
 
@@ -1339,7 +1332,9 @@ function Chat({
   historyAvailable,
   attachments,
   setAttachments,
-  onAddFiles
+  onAddFiles,
+  formError,
+  setFormError
 }: any) {
   const end = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1366,7 +1361,7 @@ function Chat({
             onChange={(e) => setSelectedModel(e.target.value)}
           >
             {models.map((m: Model) => (
-              <option key={m.id} value={m.id}>{m.id}</option>
+              <option key={m.id} value={m.id}>{getModelDisplayName(m.id)}</option>
             ))}
           </select>
 
@@ -1380,6 +1375,19 @@ function Chat({
         <div className="edit-banner">
           در حال ویرایش پیام
           <button onClick={cancelEdit}>لغو</button>
+        </div>
+      )}
+
+      {formError && (
+        <div className="global-notice chat-error-notice">
+          {formError}
+          <button
+            type="button"
+            onClick={() => setFormError("")}
+            aria-label="بستن پیام خطا"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -1466,6 +1474,19 @@ function Chat({
         <div ref={end}/>
       </div>
 
+      {formError && (
+        <div className="global-notice attachment-error" role="alert">
+          <span>{formError}</span>
+          <button
+            type="button"
+            onClick={() => setFormError("")}
+            aria-label="بستن خطا"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {attachments.length > 0 && (
         <div className="attachment-list">
           {attachments.map((a: Attachment) => (
@@ -1524,11 +1545,21 @@ function Chat({
             ".toml",
             ".env"
           ].join(",")}
-          onChange={(e) => {
+          onChange={async (e) => {
             const files = e.target.files;
+
             if (files?.length && !sending) {
-              void onAddFiles(files);
+              setFormError("");
+
+              try {
+                await onAddFiles(files);
+              } catch (err: any) {
+                setFormError(
+                  err?.message || "افزودن فایل ناموفق بود."
+                );
+              }
             }
+
             e.currentTarget.value = "";
           }}
         />
@@ -1608,7 +1639,7 @@ function Keys({ keys, models, selectedModel, setSelectedModel, deleteKey, rotate
             aria-label="مدل پیش‌فرض برای کلید جدید"
           >
             {models.map((m: Model) => (
-              <option key={m.id} value={m.id}>{m.id}</option>
+              <option key={m.id} value={m.id}>{getModelDisplayName(m.id)}</option>
             ))}
           </select>
         </div>

@@ -5,6 +5,7 @@ import base64
 import json
 import mimetypes
 import os
+from pathlib import Path
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
@@ -861,22 +862,26 @@ async def prepare_file(
                         }
                     )
 
-                pix = page.get_pixmap(
-                    matrix=fitz.Matrix(1.5, 1.5),
-                    alpha=False,
-                )
+                # vLLM is configured with --limit-mm-per-prompt.image 1.
+                # Keep at most one rendered PDF page as an image; send the
+                # remaining pages as extracted text only.
+                if index == 0:
+                    pix = page.get_pixmap(
+                        matrix=fitz.Matrix(1.5, 1.5),
+                        alpha=False,
+                    )
 
-                parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": _data_url(
-                                pix.tobytes("png"),
-                                "image/png",
-                            )
-                        },
-                    }
-                )
+                    parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": _data_url(
+                                    pix.tobytes("png"),
+                                    "image/png",
+                                )
+                            },
+                        }
+                    )
 
             if total_pages > MULTIMODAL_MAX_PDF_PAGES:
                 parts.append(
